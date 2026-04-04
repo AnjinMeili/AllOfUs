@@ -1,15 +1,47 @@
 {
   "name": "dev-keys",
   "displayName": "Dev API Keys",
-  "description": "Manage API keys in macOS Keychain and share them with any VS Code extension",
+  "description": "Manage API keys in macOS Keychain — CLI + VS Code extension",
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AnjinMeili/AllOfUs.git",
+    "directory": "dev-keys"
+  },
+  "homepage": "https://github.com/AnjinMeili/AllOfUs#dev-keys-api-key-management",
+  "keywords": [
+    "api-keys",
+    "keychain",
+    "macos",
+    "secrets",
+    "vscode",
+    "credential-management"
+  ],
+  "os": [
+    "darwin"
+  ],
   "engines": {
+    "node": ">=18",
     "vscode": "^1.90.0"
   },
-  "categories": ["Other"],
-  "activationEvents": ["onAuthenticationRequest:dev-api-keys"],
+  "bin": {
+    "dev-keys": "./bin/dev-keys"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onAuthenticationRequest:dev-api-keys"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "authentication": [
@@ -19,6 +51,10 @@
       }
     ],
     "commands": [
+      {
+        "command": "dev-keys.setup",
+        "title": "Dev Keys: Open Setup Panel"
+      },
       {
         "command": "dev-keys.addKey",
         "title": "Dev Keys: Add API Key"
@@ -36,10 +72,14 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
-    "package": "npx @vscode/vsce package --no-dependencies"
+    "prepack": "npm run build",
+    "package:vsix": "vsce package --no-dependencies",
+    "install:vsix": "code --install-extension dev-keys-0.1.0.vsix",
+    "build:all": "npm run build && npm run package:vsix"
   },
   "devDependencies": {
     "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.7.1",
     "typescript": "^5.5.0"
   }
 }

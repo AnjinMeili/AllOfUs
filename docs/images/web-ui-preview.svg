@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="620" height="540" viewBox="0 0 620 540">
+  <defs>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+      .mono { font-family: "SF Mono", Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+  <!-- Window chrome -->
+  <rect width="620" height="540" rx="10" fill="#1a1a2e"/>
+  <rect width="620" height="36" rx="10" fill="#16213e"/>
+  <rect y="26" width="620" height="10" fill="#16213e"/>
+  <circle cx="20" cy="18" r="6" fill="#ff5f57"/>
+  <circle cx="40" cy="18" r="6" fill="#ffbd2e"/>
+  <circle cx="60" cy="18" r="6" fill="#28c840"/>
+  <text x="310" y="22" fill="#888" font-size="12" text-anchor="middle">localhost:9876</text>
+
+  <!-- Header -->
+  <text x="310" y="72" fill="#e0e0e0" font-size="18" font-weight="700" text-anchor="middle">&#x1F510; dev-keys</text>
+  <text x="310" y="92" fill="#888" font-size="11" text-anchor="middle">API keys in macOS Keychain — encrypted, shared across all apps</text>
+
+  <!-- Mode buttons -->
+  <rect x="210" y="104" width="56" height="24" rx="12" fill="#0a84ff"/>
+  <text x="238" y="120" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">Web</text>
+  <rect x="274" y="104" width="68" height="24" rx="12" fill="none" stroke="#444"/>
+  <text x="308" y="120" fill="#888" font-size="11" text-anchor="middle">VS Code</text>
+  <rect x="350" y="104" width="48" height="24" rx="12" fill="none" stroke="#444"/>
+  <text x="374" y="120" fill="#888" font-size="11" text-anchor="middle">CLI</text>
+
+  <!-- Progress bar -->
+  <rect x="30" y="142" width="560" height="36" rx="6" fill="#16213e" stroke="#333"/>
+  <rect x="42" y="155" width="380" height="6" rx="3" fill="#0f3460"/>
+  <rect x="42" y="155" width="190" height="6" rx="3" fill="#30d158"/>
+  <text x="540" y="163" fill="#888" font-size="11" text-anchor="end">3 keys · 3/6 services</text>
+
+  <!-- Section label -->
+  <text x="30" y="202" fill="#888" font-size="10" font-weight="700" letter-spacing="0.8">AI SERVICES</text>
+
+  <!-- Card 1: OpenRouter (stored) -->
+  <rect x="30" y="212" width="560" height="56" rx="6" fill="#16213e" stroke="#333"/>
+  <rect x="30" y="212" width="3" height="56" rx="1" fill="#30d158"/>
+  <text x="52" y="237" font-size="16">&#x1F310;</text>
+  <text x="76" y="234" fill="#e0e0e0" font-size="13" font-weight="600">OpenRouter</text>
+  <text x="76" y="250" fill="#888" font-size="10">openrouter</text>
+  <text x="540" y="234" fill="#30d158" font-size="11" font-weight="600" text-anchor="end">&#x2713; Stored</text>
+  <text x="76" y="262" fill="#666" font-size="10" class="mono">sk-or••••••••••••••••••</text>
+
+  <!-- Card 2: OpenAI (stored) -->
+  <rect x="30" y="276" width="560" height="56" rx="6" fill="#16213e" stroke="#333"/>
+  <rect x="30" y="276" width="3" height="56" rx="1" fill="#30d158"/>
+  <text x="52" y="301" font-size="16">&#x1F916;</text>
+  <text x="76" y="298" fill="#e0e0e0" font-size="13" font-weight="600">OpenAI</text>
+  <text x="76" y="314" fill="#888" font-size="10">openai</text>
+  <text x="540" y="298" fill="#30d158" font-size="11" font-weight="600" text-anchor="end">&#x2713; Stored</text>
+  <text x="76" y="326" fill="#666" font-size="10" class="mono">sk-d•••••••••••••••••••</text>
+
+  <!-- Card 3: Anthropic (stored) -->
+  <rect x="30" y="340" width="560" height="56" rx="6" fill="#16213e" stroke="#333"/>
+  <rect x="30" y="340" width="3" height="56" rx="1" fill="#30d158"/>
+  <text x="52" y="365" font-size="16">&#x1F9E0;</text>
+  <text x="76" y="362" fill="#e0e0e0" font-size="13" font-weight="600">Anthropic</text>
+  <text x="76" y="378" fill="#888" font-size="10">anthropic</text>
+  <text x="540" y="362" fill="#30d158" font-size="11" font-weight="600" text-anchor="end">&#x2713; Stored</text>
+  <text x="76" y="390" fill="#666" font-size="10" class="mono">sk-a•••••••••••••••••••</text>
+
+  <!-- Card 4: Google AI (not set) -->
+  <rect x="30" y="404" width="560" height="56" rx="6" fill="#16213e" stroke="#333"/>
+  <text x="52" y="429" font-size="16">&#x1F50D;</text>
+  <text x="76" y="426" fill="#e0e0e0" font-size="13" font-weight="600">Google AI</text>
+  <text x="76" y="442" fill="#888" font-size="10">google</text>
+  <text x="540" y="426" fill="#888" font-size="11" text-anchor="end">&#x25CB; Not set</text>
+  <!-- Input field -->
+  <rect x="76" y="448" width="380" height="0" rx="4" fill="#0f3460" stroke="#444"/>
+
+  <!-- Card 5: GitHub (not set) -->
+  <rect x="30" y="468" width="560" height="44" rx="6" fill="#16213e" stroke="#333"/>
+  <text x="52" y="495" font-size="16">&#x1F419;</text>
+  <text x="76" y="493" fill="#e0e0e0" font-size="13" font-weight="600">GitHub</text>
+  <text x="540" y="493" fill="#888" font-size="11" text-anchor="end">&#x25CB; Not set</text>
+
+  <!-- Footer -->
+  <text x="30" y="532" fill="#666" font-size="10" class="mono">Terminal: dev-keys set &lt;name&gt;  ·  Shell: eval "$(dev-keys init)"</text>
+  <text x="558" y="532" fill="#888" font-size="10" text-anchor="end">&#x21BB; Refresh</text>
+</svg>

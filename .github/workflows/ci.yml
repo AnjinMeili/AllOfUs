@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  typecheck:
+    name: Type Check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install dev-keys dependencies
+        run: cd dev-keys && npm ci
+
+      - name: Type-check agent
+        run: npm run check
+
+      - name: Type-check dev-keys
+        run: cd dev-keys && npx tsc --noEmit
+
+  build:
+    name: Build
+    runs-on: macos-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci && cd dev-keys && npm ci
+
+      - name: Build agent
+        run: npm run build
+
+      - name: Build dev-keys + VSIX
+        run: cd dev-keys && npm run build:all
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-keys-vsix
+          path: dev-keys/dev-keys-*.vsix
+
+  code-review:
+    name: Code Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed
+        run: |
+          FILES=$(gh pr diff ${{ github.event.pull_request.number }} --name-only | head -50)
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Review summary
+        if: steps.changed.outputs.files != ''
+        run: |
+          echo "## Files changed in this PR:" > review.md
+          echo '```' >> review.md
+          echo "${{ steps.changed.outputs.files }}" >> review.md
+          echo '```' >> review.md
+          echo "" >> review.md
+          echo "### Checks" >> review.md
+          echo "- [ ] TypeScript strict mode passes" >> review.md
+          echo "- [ ] No API keys or secrets in code" >> review.md
+          echo "- [ ] CLI respects terminal conventions (NO_COLOR, TERM=dumb)" >> review.md
+          echo "- [ ] Keychain service name is \`dev-api-keys\`" >> review.md
+          echo "- [ ] ESM imports use \`.js\` extensions" >> review.md
+
+          gh pr comment ${{ github.event.pull_request.number }} --body-file review.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
