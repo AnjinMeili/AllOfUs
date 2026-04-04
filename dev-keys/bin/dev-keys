@@ -1,0 +1,142 @@
+#!/bin/bash
+# dev-keys: Manage API keys in macOS Keychain
+# Keys are stored as generic passwords with service="dev-api-keys"
+
+set -euo pipefail
+
+SERVICE="dev-api-keys"
+
+usage() {
+  cat <<EOF
+Usage: dev-keys <command> [args]
+
+Commands:
+  set <name> [value]   Store an API key (prompts if value omitted)
+  get <name>           Retrieve an API key
+  delete <name>        Remove an API key
+  list                 List all stored key names
+  env [names...]       Export keys as environment variables
+                       (use: eval \$(dev-keys env openrouter openai))
+  init                 Print shell init script (add to .zshrc/.bashrc)
+
+Examples:
+  dev-keys set openrouter sk-or-abc123
+  dev-keys set anthropic                   # prompts for value
+  dev-keys get openrouter
+  dev-keys list
+  dev-keys delete openrouter
+  eval \$(dev-keys env openrouter openai)   # sets OPENROUTER_API_KEY, OPENAI_API_KEY
+
+Shell one-liners (add to .zshrc / .bashrc):
+  # Load a single key into the environment
+  export OPENROUTER_API_KEY=\$(security find-generic-password -s dev-api-keys -a openrouter -w 2>/dev/null)
+
+  # Load all dev-api-keys into the environment at shell startup
+  eval \$(dev-keys env)
+
+  # Inline for a single command (no shell config needed)
+  OPENROUTER_API_KEY=\$(dev-keys get openrouter) npm start
+EOF
+  exit 1
+}
+
+cmd_set() {
+  local name="${1:?Missing key name}"
+  local value="${2:-}"
+
+  if [ -z "$value" ]; then
+    printf "Enter value for %s: " "$name" >&2
+    read -rs value
+    echo >&2
+  fi
+
+  if [ -z "$value" ]; then
+    echo "Error: empty value" >&2
+    exit 1
+  fi
+
+  # Delete existing entry if present (security add fails on duplicates)
+  security delete-generic-password -s "$SERVICE" -a "$name" 2>/dev/null || true
+  security add-generic-password -s "$SERVICE" -a "$name" -w "$value" -U
+  echo "Stored: $name" >&2
+}
+
+cmd_get() {
+  local name="${1:?Missing key name}"
+  security find-generic-password -s "$SERVICE" -a "$name" -w 2>/dev/null || {
+    echo "Error: key '$name' not found" >&2
+    exit 1
+  }
+}
+
+cmd_delete() {
+  local name="${1:?Missing key name}"
+  security delete-generic-password -s "$SERVICE" -a "$name" >/dev/null 2>&1 || {
+    echo "Error: key '$name' not found" >&2
+    exit 1
+  }
+  echo "Deleted: $name" >&2
+}
+
+cmd_list() {
+  # Parse account names from keychain dump for our service
+  # Uses grep/sed instead of gawk for macOS compat
+  security dump-keychain 2>/dev/null | \
+    grep -A4 "0x00000007 <blob>=\"$SERVICE\"" | \
+    grep '"acct"<blob>=' | \
+    sed 's/.*="\([^"]*\)".*/\1/' | \
+    sort -u
+}
+
+cmd_env() {
+  local names=("$@")
+  if [ ${#names[@]} -eq 0 ]; then
+    # Export all keys
+    while IFS= read -r name; do
+      [ -z "$name" ] && continue
+      names+=("$name")
+    done < <(cmd_list)
+  fi
+
+  for name in "${names[@]}"; do
+    local value
+    value=$(security find-generic-password -s "$SERVICE" -a "$name" -w 2>/dev/null) || continue
+    # Convert name to ENV_VAR format: openrouter -> OPENROUTER_API_KEY
+    local env_name
+    env_name=$(echo "$name" | tr '[:lower:]-' '[:upper:]_')
+    echo "export ${env_name}_API_KEY='${value}'"
+  done
+}
+
+cmd_init() {
+  cat <<'INITEOF'
+# dev-keys: load API keys from macOS Keychain into environment
+# Add this line to your .zshrc or .bashrc:
+#   eval "$(dev-keys init)"
+
+_dk_get() { security find-generic-password -s dev-api-keys -a "$1" -w 2>/dev/null; }
+
+# Load all stored keys as <NAME>_API_KEY env vars
+eval "$(dev-keys env 2>/dev/null)"
+
+# Helper: run any command with a key injected
+# Usage: with-key openrouter npm start
+with-key() {
+  local name="$1"; shift
+  local env_name
+  env_name=$(echo "$name" | tr '[:lower:]-' '[:upper:]_')
+  export "${env_name}_API_KEY=$(_dk_get "$name")"
+  "$@"
+}
+INITEOF
+}
+
+case "${1:-}" in
+  set)    shift; cmd_set "$@" ;;
+  get)    shift; cmd_get "$@" ;;
+  delete) shift; cmd_delete "$@" ;;
+  list)   cmd_list ;;
+  env)    shift; cmd_env "$@" ;;
+  init)   cmd_init ;;
+  *)      usage ;;
+esac

@@ -1,0 +1,45 @@
+{
+  "name": "dev-keys",
+  "displayName": "Dev API Keys",
+  "description": "Manage API keys in macOS Keychain and share them with any VS Code extension",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onAuthenticationRequest:dev-api-keys"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "authentication": [
+      {
+        "id": "dev-api-keys",
+        "label": "Dev API Keys (Keychain)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "dev-keys.addKey",
+        "title": "Dev Keys: Add API Key"
+      },
+      {
+        "command": "dev-keys.removeKey",
+        "title": "Dev Keys: Remove API Key"
+      },
+      {
+        "command": "dev-keys.listKeys",
+        "title": "Dev Keys: List API Keys"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0"
+  }
+}
