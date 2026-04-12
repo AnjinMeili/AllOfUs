@@ -560,8 +560,7 @@ server.listen(PORT, '127.0.0.1', () => {
 
   // Open in default browser
   if (process.argv.includes('--no-open')) { return; }
-  const { execFileSync: exec } = require('node:child_process') as typeof import('node:child_process');
-  try { exec('open', [url]); } catch {}
+  try { execFileSync('open', [url]); } catch {}
 });
 
 // Graceful shutdown

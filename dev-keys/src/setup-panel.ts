@@ -41,7 +41,8 @@ export function showSetupPanel(context: vscode.ExtensionContext, onKeysChanged: 
           await refreshPanel();
           break;
 
-        case 'save': {
+        case 'save':
+        case 'saveCustom': {
           if (!msg.name || !msg.value) { break; }
           await keychain.setKey(msg.name, msg.value);
           onKeysChanged();
@@ -65,15 +66,6 @@ export function showSetupPanel(context: vscode.ExtensionContext, onKeysChanged: 
           }
           break;
         }
-
-        case 'saveCustom': {
-          if (!msg.name || !msg.value) { break; }
-          await keychain.setKey(msg.name, msg.value);
-          onKeysChanged();
-          await refreshPanel();
-          currentPanel?.webview.postMessage({ type: 'saved', name: msg.name });
-          break;
-        }
       }
     },
     undefined,
@@ -87,12 +79,10 @@ async function refreshPanel(): Promise<void> {
   if (!currentPanel) { return; }
 
   const storedNames = await keychain.listKeys();
-  const keys: Array<{ name: string; stored: boolean; masked: string }> = [];
-
-  for (const name of storedNames) {
-    const value = await keychain.getKey(name);
-    keys.push({ name, stored: true, masked: maskValue(value ?? '') });
-  }
+  const values = await Promise.all(storedNames.map(name => keychain.getKey(name)));
+  const keys: Array<{ name: string; stored: boolean; masked: string }> = storedNames.map(
+    (name, i) => ({ name, stored: true, masked: maskValue(values[i] ?? '') }),
+  );
 
   currentPanel.webview.html = getHtml(keys, storedNames);
 }
