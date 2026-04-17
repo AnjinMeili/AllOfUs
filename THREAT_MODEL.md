@@ -56,11 +56,12 @@ does not cover, so you can decide whether the tool fits your situation.
   HashiCorp Vault, 1Password Connect, or AWS Secrets Manager for those.
 - **Key rotation, expiry, or access audit.** dev-keys does not rotate,
   expire, or log access. Keys live in Keychain until you delete them.
-- **Cross-platform caveats.** Linux and Windows support ships via
-  `@napi-rs/keyring` (Secret Service / Credential Manager). A small
-  name-index file (`~/.config/dev-keys/names.json` or
-  `%APPDATA%/dev-keys/names.json`) records key *names* so the UI can
-  list them — no secret values are stored in that file. Deleting it is
+- **Cross-platform caveats.** Secret storage on Linux and Windows goes
+  through `@napi-rs/keyring` (Secret Service / Credential Manager); on
+  macOS it goes through the `security` CLI. A small name-index file
+  (`~/.config/dev-keys/names.json` or `%APPDATA%/dev-keys/names.json`)
+  records key *names* on Linux/Windows so `list()` can enumerate them
+  — no secret values are stored in that file. Deleting it is
   non-destructive: secrets stay in the OS credential store, you just
   lose the list view until keys are re-added.
 - **The agent's API calls.** The agent sends prompts and tool results

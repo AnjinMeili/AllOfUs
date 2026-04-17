@@ -1,7 +1,7 @@
 {
   "name": "dev-keys",
   "displayName": "Dev API Keys",
-  "description": "Manage API keys in macOS Keychain — CLI + VS Code extension",
+  "description": "Cross-platform API key storage — CLI + VS Code extension backed by Keychain / Secret Service / Credential Manager",
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",
@@ -24,10 +24,9 @@
     "vscode": "^1.90.0"
   },
   "bin": {
-    "dev-keys": "./bin/dev-keys"
+    "dev-keys": "./dist/cli.js"
   },
   "files": [
-    "bin/",
     "dist/",
     "package.json",
     "README.md",

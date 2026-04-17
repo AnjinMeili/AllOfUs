@@ -5,7 +5,7 @@ import { getKey } from './get-key.js';
 
 async function main() {
   const agent = createAgent({
-    apiKey: getKey('openrouter'),
+    apiKey: await getKey('openrouter'),
     model: 'openrouter/auto',
     instructions: 'You are a helpful assistant with access to tools.',
     tools: defaultTools,

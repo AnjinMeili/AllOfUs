@@ -1,16 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import type { StreamableOutputItem } from '@openrouter/sdk/lib/stream-transformers.js';
 import { Box, Text, render, useApp, useInput } from 'ink';
-import { createAgent, type Message } from './agent.js';
+import { createAgent, type Agent, type Message } from './agent.js';
 import { defaultTools } from './tools.js';
 import { getKey } from './get-key.js';
-
-const agent = createAgent({
-  apiKey: getKey('openrouter'),
-  model: 'openrouter/auto',
-  instructions: 'You are a helpful assistant. Be concise.',
-  tools: defaultTools,
-});
 
 function ChatMessage({ message }: { message: Message }) {
   const isUser = message.role === 'user';
@@ -88,7 +81,7 @@ function InputField({
   );
 }
 
-function App() {
+function App({ agent }: { agent: Agent }) {
   const { exit } = useApp();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -137,7 +130,7 @@ function App() {
       agent.off('message:assistant', onMessageAssistant);
       agent.off('error', onError);
     };
-  }, []);
+  }, [agent]);
 
   const sendMessage = useCallback(async () => {
     if (!input.trim() || isLoading) {
@@ -149,7 +142,7 @@ function App() {
     setMessages((prev) => [...prev, { role: 'user', content: text }]);
 
     await agent.send(text);
-  }, [input, isLoading]);
+  }, [input, isLoading, agent]);
 
   return (
     <Box flexDirection="column" padding={1}>
@@ -175,4 +168,18 @@ function App() {
   );
 }
 
-render(<App />);
+async function main(): Promise<void> {
+  const agent = createAgent({
+    apiKey: await getKey('openrouter'),
+    model: 'openrouter/auto',
+    instructions: 'You are a helpful assistant. Be concise.',
+    tools: defaultTools,
+  });
+  render(<App agent={agent} />);
+}
+
+main().catch((err) => {
+  const message = err instanceof Error ? err.message : String(err);
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+});
