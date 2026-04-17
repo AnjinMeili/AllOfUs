@@ -112,16 +112,16 @@ const apiKey = session.accessToken;
 - **Node.js** >= 18
 - [OpenRouter API key](https://openrouter.ai/settings/keys) (for the agent)
 
-Platform support:
+Platform support (all three work on macOS, Linux, and Windows):
 
-| Component | macOS | Linux | Windows |
-|---|---|---|---|
-| Bash CLI (`dev-keys`) | ✓ (Keychain via `security` CLI) | — | — |
-| VS Code extension | ✓ | ✓ (Secret Service) | ✓ (Credential Manager) |
-| Web UI (`dev-keys ui`) | ✓ | needs Node launcher | needs Node launcher |
-| Agent (`npm start`) | ✓ | — | — |
+| Component | Backend |
+|---|---|
+| CLI (`dev-keys`) | Keychain / Secret Service / Credential Manager via [`@napi-rs/keyring`](https://github.com/Brooooooklyn/keyring-node) |
+| VS Code extension | same |
+| Web UI (`dev-keys ui`) | same |
+| Agent (`npm start`) | same (via `getKey(...)` in `src/get-key.ts`) |
 
-Cross-platform secret access goes through [`@napi-rs/keyring`](https://github.com/Brooooooklyn/keyring-node); the bash CLI and the agent's `get-key.ts` still shell out to `security` and therefore stay macOS-only for now.
+The agent's `getKey` is async: `const key = await getKey('openrouter')`.
 
 ### Install Everything
 
@@ -129,15 +129,15 @@ Cross-platform secret access goes through [`@napi-rs/keyring`](https://github.co
 git clone https://github.com/AnjinMeili/AllOfUs.git
 cd AllOfUs
 
-# Install dependencies
+# Install dependencies for both packages
 npm install
 cd dev-keys && npm install && cd ..
 
 # Build everything (agent + extension + VSIX)
 npm run build:all
 
-# Install CLI globally
-ln -sf "$(pwd)/dev-keys/bin/dev-keys" /usr/local/bin/dev-keys
+# Make the CLI available on your $PATH (from the dev-keys package)
+cd dev-keys && npm link && cd ..
 
 # Install VS Code extension
 npm run install:ext
@@ -151,8 +151,8 @@ If you just want key management without the agent:
 cd dev-keys
 npm install && npm run build
 
-# CLI
-ln -sf "$(pwd)/bin/dev-keys" /usr/local/bin/dev-keys
+# CLI — npm link creates a platform-appropriate shim on $PATH
+npm link
 
 # VS Code extension
 npm run install:vsix
@@ -253,8 +253,9 @@ OPENROUTER_API_KEY=$(security find-generic-password -s dev-api-keys -a openroute
 ```typescript
 import { getKey } from './get-key.js';
 
-// Checks OPENROUTER_API_KEY env var first, falls back to Keychain
-const apiKey = getKey('openrouter');
+// Checks OPENROUTER_API_KEY env var first, then the platform keystore
+// (Keychain on macOS, Secret Service on Linux, Credential Manager on Windows).
+const apiKey = await getKey('openrouter');
 ```
 
 ### Access Patterns Summary
@@ -309,7 +310,7 @@ import { createAgent } from './agent.js';
 import { getKey } from './get-key.js';
 
 const agent = createAgent({
-  apiKey: getKey('openrouter'),
+  apiKey: await getKey('openrouter'),
   model: 'openrouter/auto',
   instructions: 'You are a helpful assistant.',
   tools: [...],

@@ -1,42 +1,33 @@
-import { execFileSync } from 'node:child_process';
-import { platform } from 'node:os';
+import { AsyncEntry } from '@napi-rs/keyring';
 
 const SERVICE = 'dev-api-keys';
 
 /**
- * Get an API key — checks env var first, falls back to macOS Keychain.
+ * Resolve an API key — env var first, then the OS credential store.
  *
- *   const key = getKey('openrouter');
- *   // checks process.env.OPENROUTER_API_KEY, then Keychain "dev-api-keys" / "openrouter"
+ *   const key = await getKey('openrouter');
+ *   // checks process.env.OPENROUTER_API_KEY, then the platform keystore:
+ *   //   macOS   → Keychain
+ *   //   Linux   → Secret Service
+ *   //   Windows → Credential Manager
  *
- * Runtime note: the Keychain fallback uses the macOS `security` CLI and
- * so only works on darwin. On other platforms, set the env var explicitly
- * (or wire up a cross-platform KeyStore via dev-keys/src/keystore.ts).
+ * Throws with a clear message pointing at `dev-keys set <name>` if the
+ * key is missing everywhere.
  */
-export function getKey(name: string): string {
+export async function getKey(name: string): Promise<string> {
   const envName = `${name.toUpperCase().replace(/-/g, '_')}_API_KEY`;
   const fromEnv = process.env[envName];
-  if (fromEnv) {
-    return fromEnv;
-  }
-
-  if (platform() !== 'darwin') {
-    throw new Error(
-      `API key "${name}" not found. Set ${envName} in your environment. ` +
-      `(Keychain fallback is macOS-only; cross-platform KeyStore lives in ` +
-      `dev-keys/src/keystore.ts.)`,
-    );
-  }
+  if (fromEnv) return fromEnv;
 
   try {
-    return execFileSync(
-      'security',
-      ['find-generic-password', '-s', SERVICE, '-a', name, '-w'],
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-    ).trim();
+    const entry = new AsyncEntry(SERVICE, name);
+    const value = await entry.getPassword();
+    if (value) return value;
   } catch {
-    throw new Error(
-      `API key "${name}" not found. Set ${envName} or run: dev-keys set ${name}`,
-    );
+    /* fall through to the missing-key error */
   }
+
+  throw new Error(
+    `API key "${name}" not found. Set ${envName} or run: dev-keys set ${name}`,
+  );
 }
