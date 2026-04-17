@@ -5,6 +5,11 @@ import { showSetupPanel } from './setup-panel.js';
 const PROVIDER_ID = 'dev-api-keys';
 const PROVIDER_LABEL = 'Dev API Keys (Keychain)';
 
+// Scope convention: exactly one scope, which is the Keychain key name
+// (e.g. "openrouter"). Multi-scope OAuth semantics are not supported —
+// callers must request one key at a time.
+const VALID_KEY_NAME = /^[a-z0-9_-]{1,64}$/i;
+
 function keyToSession(name: string, value: string): vscode.AuthenticationSession {
   return {
     id: name,
@@ -21,35 +26,46 @@ class DevKeysAuthProvider implements vscode.AuthenticationProvider {
 
   readonly onDidChangeSessions = this._onDidChangeSessions.event;
 
+  /**
+   * Return a session for the requested key, or an empty array.
+   *
+   * Contract differs from most AuthenticationProviders: we require exactly
+   * one scope (the key name). Calls with zero scopes, multiple scopes, or
+   * an invalid name return []. We deliberately do NOT dump every stored
+   * key for an unscoped probe, so an extension that calls
+   * `vscode.authentication.getSessions('dev-api-keys')` cannot exfiltrate
+   * every API key the user has stored.
+   */
   async getSessions(
     scopes?: readonly string[],
     _options?: vscode.AuthenticationProviderSessionOptions,
   ): Promise<vscode.AuthenticationSession[]> {
-    if (scopes && scopes.length > 0) {
-      const name = scopes[0];
-      const value = await keychain.getKey(name);
-      if (value) { return [keyToSession(name, value)]; }
-      return [];
-    }
-
-    const names = await keychain.listKeys();
-    const sessions: vscode.AuthenticationSession[] = [];
-    for (const name of names) {
-      const value = await keychain.getKey(name);
-      if (value) { sessions.push(keyToSession(name, value)); }
-    }
-    return sessions;
+    if (!scopes || scopes.length !== 1) { return []; }
+    const name = scopes[0];
+    if (!VALID_KEY_NAME.test(name)) { return []; }
+    const value = await keychain.getKey(name);
+    return value ? [keyToSession(name, value)] : [];
   }
 
   async createSession(
     scopes: readonly string[],
     _options?: vscode.AuthenticationProviderSessionOptions,
   ): Promise<vscode.AuthenticationSession> {
-    const name = scopes[0] ?? await vscode.window.showInputBox({
-      prompt: 'Key name (e.g., openrouter, openai, anthropic)',
-      placeHolder: 'openrouter',
-    });
-    if (!name) { throw new Error('Key name is required'); }
+    if (scopes.length > 1) {
+      throw new Error('dev-api-keys supports exactly one scope (the key name).');
+    }
+
+    let name = scopes[0];
+    if (!name) {
+      name = await vscode.window.showInputBox({
+        prompt: 'Key name (e.g., openrouter, openai, anthropic)',
+        placeHolder: 'openrouter',
+        validateInput: (v) => VALID_KEY_NAME.test(v) ? null : 'Use [a-z0-9_-], 1-64 chars',
+      }) ?? '';
+    }
+    if (!name || !VALID_KEY_NAME.test(name)) {
+      throw new Error('Valid key name is required (use [a-z0-9_-], 1-64 chars).');
+    }
 
     const existing = await keychain.getKey(name);
     if (existing) { return keyToSession(name, existing); }
@@ -68,6 +84,7 @@ class DevKeysAuthProvider implements vscode.AuthenticationProvider {
   }
 
   async removeSession(sessionId: string): Promise<void> {
+    if (!VALID_KEY_NAME.test(sessionId)) { return; }
     const value = await keychain.getKey(sessionId);
     if (value) {
       await keychain.deleteKey(sessionId);
