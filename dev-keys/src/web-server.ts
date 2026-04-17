@@ -3,15 +3,21 @@
  * Standalone web UI for dev-keys — runs in any browser.
  * Launched via: dev-keys ui
  *
- * Serves the same setup panel as the VS Code extension,
- * backed by a tiny HTTP + SSE server talking to macOS Keychain.
+ * Security posture:
+ *   - Binds to 127.0.0.1 only
+ *   - Validates the Host header (blocks DNS rebinding)
+ *   - Requires a per-launch random token on every request
+ *   - No CORS headers (same-origin only)
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { execFileSync } from 'node:child_process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 const SERVICE = 'dev-api-keys';
 const PORT = parseInt(process.env.DEV_KEYS_PORT ?? '9876', 10);
+const TOKEN = randomBytes(32).toString('hex');
+const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
 
 // ── Keychain helpers (sync, fine for a local tool) ──────────────────
 
@@ -58,7 +64,29 @@ function mask(value: string): string {
   return value.slice(0, show) + '•'.repeat(Math.min(len - show, 24));
 }
 
-// ── SSE clients for live refresh ──────────────��─────────────────────
+// ── Auth ────────────────────────────────────────────────────────────
+
+function constantTimeEq(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+function extractToken(req: IncomingMessage, url: URL): string | undefined {
+  const auth = req.headers.authorization;
+  if (auth && auth.startsWith('Bearer ')) return auth.slice(7);
+  const q = url.searchParams.get('t');
+  if (q) return q;
+  return undefined;
+}
+
+function hostOk(req: IncomingMessage): boolean {
+  const host = req.headers.host;
+  return typeof host === 'string' && ALLOWED_HOSTS.has(host);
+}
+
+// ── SSE clients for live refresh ───────────────────────────────────
 
 const sseClients = new Set<ServerResponse>();
 
@@ -79,7 +107,7 @@ function getKeysPayload() {
   });
 }
 
-// ── HTTP server ─────────────────────────────���───────────────────────
+// ── HTTP server ─────────────────────────────────────────────────────
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve) => {
@@ -90,31 +118,52 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 function json(res: ServerResponse, status: number, data: unknown): void {
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
+}
+
+function plain(res: ServerResponse, status: number, body: string): void {
+  res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end(body);
 }
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
 
-  // CORS preflight
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    });
-    res.end();
+  if (!hostOk(req)) {
+    plain(res, 403, 'Forbidden: invalid Host header');
     return;
   }
 
-  // SSE endpoint for live updates
+  // Landing page: open via the URL printed on stdout (contains ?t=<token>).
+  // Stores token in sessionStorage, then redirects to /app so it isn't visible.
+  if (url.pathname === '/' && req.method === 'GET') {
+    const urlToken = url.searchParams.get('t') ?? '';
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(getLandingHtml(urlToken));
+    return;
+  }
+
+  // Authenticated app page: requires token in sessionStorage (we do not
+  // re-check here because the app always fetches /api/* which does check).
+  if (url.pathname === '/app' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(getAppHtml());
+    return;
+  }
+
+  // All remaining routes require the token.
+  const presented = extractToken(req, url);
+  if (!presented || !constantTimeEq(presented, TOKEN)) {
+    plain(res, 401, 'Unauthorized');
+    return;
+  }
+
   if (url.pathname === '/events' && req.method === 'GET') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
     });
     res.write('event: connected\ndata: {}\n\n');
     sseClients.add(res);
@@ -122,14 +171,20 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // JSON API
   if (url.pathname === '/api/keys' && req.method === 'GET') {
     return json(res, 200, { keys: getKeysPayload() });
   }
 
   if (url.pathname === '/api/keys' && req.method === 'POST') {
-    const body = JSON.parse(await readBody(req));
-    if (!body.name || !body.value) { return json(res, 400, { error: 'name and value required' }); }
+    let body: { name?: unknown; value?: unknown };
+    try { body = JSON.parse(await readBody(req)); }
+    catch { return json(res, 400, { error: 'invalid json' }); }
+    if (typeof body.name !== 'string' || typeof body.value !== 'string' || !body.name || !body.value) {
+      return json(res, 400, { error: 'name and value required' });
+    }
+    if (!/^[a-z0-9_-]{1,64}$/i.test(body.name)) {
+      return json(res, 400, { error: 'invalid name (use [a-z0-9_-], 1-64 chars)' });
+    }
     kcSet(body.name, body.value);
     broadcast('refresh', {});
     return json(res, 200, { ok: true, name: body.name });
@@ -137,169 +192,117 @@ const server = createServer(async (req, res) => {
 
   if (url.pathname.startsWith('/api/keys/') && req.method === 'DELETE') {
     const name = decodeURIComponent(url.pathname.slice('/api/keys/'.length));
+    if (!/^[a-z0-9_-]{1,64}$/i.test(name)) {
+      return json(res, 400, { error: 'invalid name' });
+    }
     try { kcDelete(name); } catch { return json(res, 404, { error: 'not found' }); }
     broadcast('refresh', {});
     return json(res, 200, { ok: true, name });
   }
 
-  // Serve the HTML UI
-  if (url.pathname === '/' || url.pathname === '/index.html') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(getWebHtml());
-    return;
-  }
-
-  res.writeHead(404);
-  res.end('Not found');
+  plain(res, 404, 'Not found');
 });
 
-// ── HTML (adapted from webview, uses fetch instead of vscode.postMessage) ──
+// ── HTML ────────────────────────────────────────────────────────────
 
-function getWebHtml(): string {
+function getLandingHtml(urlToken: string): string {
+  // The token is placed into sessionStorage and the URL is replaced so the
+  // token is no longer visible. If no token is present we tell the user to
+  // re-launch from the terminal.
+  return /*html*/ `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8" />
+<title>dev-keys</title>
+<meta name="referrer" content="no-referrer" />
+<style>body{font-family:-apple-system,sans-serif;max-width:520px;margin:80px auto;padding:24px;color:#333}</style>
+</head><body>
+<noscript>This page requires JavaScript.</noscript>
+<script>
+(function(){
+  var u = new URL(window.location.href);
+  var t = u.searchParams.get('t');
+  if (t) {
+    sessionStorage.setItem('dk_token', t);
+    u.searchParams.delete('t');
+    u.pathname = '/app';
+    window.location.replace(u.toString());
+  } else if (sessionStorage.getItem('dk_token')) {
+    u.pathname = '/app';
+    window.location.replace(u.toString());
+  } else {
+    document.body.innerHTML =
+      '<h2>dev-keys</h2>' +
+      '<p>No session token. Run <code>dev-keys ui</code> in a terminal and ' +
+      'use the URL it prints — the token is included there.</p>';
+  }
+})();
+</script>
+</body></html>`;
+}
+
+function getAppHtml(): string {
   return /*html*/ `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="referrer" content="no-referrer" />
 <title>dev-keys</title>
 <style>
   :root {
-    --bg: #1a1a2e;
-    --fg: #e0e0e0;
-    --border: #333;
-    --card-bg: #16213e;
-    --input-bg: #0f3460;
-    --input-border: #444;
-    --input-fg: #e0e0e0;
-    --btn-bg: #0a84ff;
-    --btn-fg: #fff;
-    --accent: #0a84ff;
-    --danger: #ff453a;
-    --success: #30d158;
-    --muted: #888;
-    --radius: 8px;
+    --bg: #1a1a2e; --fg: #e0e0e0; --border: #333; --card-bg: #16213e;
+    --input-bg: #0f3460; --input-border: #444; --input-fg: #e0e0e0;
+    --btn-bg: #0a84ff; --btn-fg: #fff; --accent: #0a84ff;
+    --danger: #ff453a; --success: #30d158; --muted: #888; --radius: 8px;
   }
   @media (prefers-color-scheme: light) {
     :root {
-      --bg: #f5f5f7;
-      --fg: #1d1d1f;
-      --border: #d2d2d7;
-      --card-bg: #fff;
-      --input-bg: #f0f0f0;
-      --input-border: #ccc;
-      --input-fg: #1d1d1f;
-      --btn-bg: #0071e3;
-      --btn-fg: #fff;
-      --accent: #0071e3;
-      --danger: #ff3b30;
-      --success: #34c759;
-      --muted: #86868b;
+      --bg: #f5f5f7; --fg: #1d1d1f; --border: #d2d2d7; --card-bg: #fff;
+      --input-bg: #f0f0f0; --input-border: #ccc; --input-fg: #1d1d1f;
+      --btn-bg: #0071e3; --btn-fg: #fff; --accent: #0071e3;
+      --danger: #ff3b30; --success: #34c759; --muted: #86868b;
     }
   }
-
   * { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-    font-size: 14px;
-    color: var(--fg);
-    background: var(--bg);
-    min-height: 100vh;
-  }
-
-  .container {
-    max-width: 640px;
-    margin: 0 auto;
-    padding: 32px 20px 60px;
-  }
-
-  .header {
-    text-align: center;
-    margin-bottom: 28px;
-  }
+  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+         font-size: 14px; color: var(--fg); background: var(--bg); min-height: 100vh; }
+  .container { max-width: 640px; margin: 0 auto; padding: 32px 20px 60px; }
+  .header { text-align: center; margin-bottom: 28px; }
   .header h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
   .header p { color: var(--muted); font-size: 13px; }
-
-  .mode-switcher {
-    display: flex;
-    justify-content: center;
-    gap: 8px;
-    margin-bottom: 24px;
-  }
-  .mode-btn {
-    padding: 6px 16px;
-    font-size: 12px;
-    font-weight: 600;
-    border-radius: 20px;
-    border: 1px solid var(--border);
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .mode-btn.active, .mode-btn:hover {
-    background: var(--accent);
-    color: var(--btn-fg);
-    border-color: var(--accent);
-  }
-
-  .progress-bar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 24px;
-    padding: 12px 16px;
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-  }
+  .progress-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 24px;
+                  padding: 12px 16px; background: var(--card-bg); border: 1px solid var(--border);
+                  border-radius: var(--radius); }
   .progress-track { flex: 1; height: 6px; background: var(--input-bg); border-radius: 3px; overflow: hidden; }
   .progress-fill { height: 100%; background: var(--success); border-radius: 3px; transition: width 0.4s ease; }
   .progress-label { font-size: 12px; color: var(--muted); white-space: nowrap; }
-
-  .section-label {
-    font-size: 11px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.8px; color: var(--muted); margin: 20px 0 10px;
-  }
-
-  .card {
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    margin-bottom: 8px;
-    transition: border-color 0.2s, box-shadow 0.2s;
-  }
-  .card:hover { border-color: var(--accent); box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+  .section-label { font-size: 11px; font-weight: 700; text-transform: uppercase;
+                   letter-spacing: 0.8px; color: var(--muted); margin: 20px 0 10px; }
+  .card { background: var(--card-bg); border: 1px solid var(--border);
+          border-radius: var(--radius); margin-bottom: 8px;
+          transition: border-color 0.2s, box-shadow 0.2s; }
+  .card:hover { border-color: var(--accent); }
   .card-stored { border-left: 3px solid var(--success); }
-
   .card-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; }
   .card-icon { font-size: 20px; flex-shrink: 0; }
-  .card-title { flex: 1; }
+  .card-title { flex: 1; min-width: 0; }
   .card-label { font-weight: 600; display: block; }
-  .card-name { font-size: 11px; color: var(--muted); }
+  .card-name { font-size: 11px; color: var(--muted); word-break: break-all; }
   .card-status { font-size: 11px; font-weight: 600; white-space: nowrap; }
   .status-ok { color: var(--success); }
   .status-missing { color: var(--muted); }
-
   .card-body { padding: 0 16px 14px; }
-  .masked-value { display: block; font-family: "SF Mono", Menlo, monospace; font-size: 12px; color: var(--muted); margin-bottom: 10px; word-break: break-all; }
-
+  .masked-value { display: block; font-family: "SF Mono", Menlo, monospace;
+                  font-size: 12px; color: var(--muted); margin-bottom: 10px; word-break: break-all; }
   .input-row { display: flex; gap: 6px; margin-bottom: 10px; }
-  .key-input {
-    flex: 1; padding: 8px 12px;
-    font-family: "SF Mono", Menlo, monospace; font-size: 13px;
-    background: var(--input-bg); color: var(--input-fg);
-    border: 1px solid var(--input-border); border-radius: 6px; outline: none;
-  }
+  .key-input { flex: 1; padding: 8px 12px; font-family: "SF Mono", Menlo, monospace;
+               font-size: 13px; background: var(--input-bg); color: var(--input-fg);
+               border: 1px solid var(--input-border); border-radius: 6px; outline: none; }
   .key-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(10,132,255,0.3); }
-
   .card-actions { display: flex; gap: 8px; align-items: center; }
-  .btn {
-    padding: 6px 14px; font-size: 12px; font-weight: 600; font-family: inherit;
-    border-radius: 6px; border: none; cursor: pointer; transition: all 0.15s;
-  }
+  .btn { padding: 6px 14px; font-size: 12px; font-weight: 600; font-family: inherit;
+         border-radius: 6px; border: none; cursor: pointer; transition: all 0.15s; }
   .btn:hover { filter: brightness(1.1); }
-  .btn:active { transform: scale(0.97); }
   .btn-primary { background: var(--btn-bg); color: var(--btn-fg); }
   .btn-ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); }
   .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); opacity: 0.8; }
@@ -307,35 +310,24 @@ function getWebHtml(): string {
   .btn-link { border: none; background: none; text-decoration: underline; color: var(--accent); padding: 6px 4px; }
   .btn-sm { padding: 4px 10px; font-size: 11px; }
   .btn-toggle { background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 14px; }
-
-  .add-custom { margin-top: 12px; padding: 14px 16px; background: var(--card-bg); border: 1px dashed var(--border); border-radius: var(--radius); }
+  .add-custom { margin-top: 12px; padding: 14px 16px; background: var(--card-bg);
+                border: 1px dashed var(--border); border-radius: var(--radius); }
   .add-custom-row { display: flex; gap: 6px; align-items: center; }
-  .add-custom-row input {
-    padding: 7px 10px; font-size: 13px; background: var(--input-bg); color: var(--input-fg);
-    border: 1px solid var(--input-border); border-radius: 6px; outline: none; font-family: inherit;
-  }
-  .add-custom-row input:focus { border-color: var(--accent); }
+  .add-custom-row input { padding: 7px 10px; font-size: 13px; background: var(--input-bg);
+                           color: var(--input-fg); border: 1px solid var(--input-border);
+                           border-radius: 6px; outline: none; font-family: inherit; }
   .name-input { width: 150px; }
   .value-input { flex: 1; font-family: "SF Mono", Menlo, monospace !important; }
-
-  .toast {
-    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
-    background: var(--success); color: #000; padding: 10px 24px; border-radius: 8px;
-    font-size: 13px; font-weight: 700; opacity: 0; transition: all 0.3s ease; pointer-events: none; z-index: 1000;
-  }
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
+           background: var(--success); color: #000; padding: 10px 24px; border-radius: 8px;
+           font-size: 13px; font-weight: 700; opacity: 0; transition: all 0.3s ease;
+           pointer-events: none; z-index: 1000; }
   .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
-
-  .footer {
-    margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border);
-    display: flex; justify-content: space-between; align-items: center;
-  }
+  .footer { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border);
+            display: flex; justify-content: space-between; align-items: center; }
   .footer-hint { font-size: 11px; color: var(--muted); }
   .footer-hint code { background: var(--input-bg); padding: 2px 5px; border-radius: 3px; font-size: 11px; }
-
-  .empty-state {
-    text-align: center; padding: 32px 16px; color: var(--muted);
-  }
-  .empty-state p { margin-bottom: 12px; }
+  .empty-state { text-align: center; padding: 32px 16px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -344,225 +336,248 @@ function getWebHtml(): string {
     <h1>🔐 dev-keys</h1>
     <p>API keys in macOS Keychain — encrypted, shared across all apps</p>
   </div>
-
-  <div class="mode-switcher">
-    <button class="mode-btn active" onclick="location.reload()">Web</button>
-    <button class="mode-btn" onclick="showToast('Open VS Code → Cmd+Shift+P → Dev Keys: Open Setup Panel')">VS Code</button>
-    <button class="mode-btn" onclick="showToast('Run: dev-keys set &lt;name&gt; in your terminal')">CLI</button>
-  </div>
-
   <div class="progress-bar">
     <div class="progress-track"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
-    <span class="progress-label" id="progress-label">Loading...</span>
+    <span class="progress-label" id="progress-label">Loading…</span>
   </div>
-
-  <div id="content"><div class="empty-state"><p>Loading keys from Keychain...</p></div></div>
-
+  <div id="content"><div class="empty-state"><p>Loading keys from Keychain…</p></div></div>
   <div class="section-label">Add Custom Key</div>
   <div class="add-custom">
     <div class="add-custom-row">
       <input type="text" id="custom-name" class="name-input" placeholder="key name" spellcheck="false" />
       <input type="password" id="custom-value" class="value-input" placeholder="value" spellcheck="false" autocomplete="off" />
-      <button class="btn btn-sm btn-toggle" onclick="toggleVis('custom-value', this)">👁</button>
-      <button class="btn btn-primary btn-sm" onclick="saveCustom()">Add</button>
+      <button class="btn btn-sm btn-toggle" id="toggle-custom">👁</button>
+      <button class="btn btn-primary btn-sm" id="save-custom">Add</button>
     </div>
   </div>
-
   <div class="footer">
     <span class="footer-hint">
       Terminal: <code>dev-keys set &lt;name&gt;</code> · Shell: <code>eval "$(dev-keys init)"</code>
     </span>
-    <button class="btn btn-ghost btn-sm" onclick="loadKeys()">↻ Refresh</button>
+    <button class="btn btn-ghost btn-sm" id="refresh-btn">↻ Refresh</button>
   </div>
 </div>
 <div class="toast" id="toast"></div>
-
 <script>
-const SERVICES = [
-  { name: 'openrouter', label: 'OpenRouter', url: 'https://openrouter.ai/settings/keys', prefix: 'sk-or-', icon: '🌐' },
-  { name: 'openai', label: 'OpenAI', url: 'https://platform.openai.com/api-keys', prefix: 'sk-', icon: '🤖' },
-  { name: 'anthropic', label: 'Anthropic', url: 'https://console.anthropic.com/settings/keys', prefix: 'sk-ant-', icon: '🧠' },
-  { name: 'google', label: 'Google AI', url: 'https://aistudio.google.com/apikey', prefix: 'AI', icon: '🔍' },
-  { name: 'github', label: 'GitHub', url: 'https://github.com/settings/tokens', prefix: 'ghp_', icon: '🐙' },
-  { name: 'huggingface', label: 'Hugging Face', url: 'https://huggingface.co/settings/tokens', prefix: 'hf_', icon: '🤗' },
-];
+(function(){
+  var TOKEN = sessionStorage.getItem('dk_token');
+  if (!TOKEN) { window.location.replace('/'); return; }
 
-let currentKeys = [];
+  var SERVICES = [
+    { name: 'openrouter', label: 'OpenRouter', url: 'https://openrouter.ai/settings/keys', prefix: 'sk-or-', icon: '🌐' },
+    { name: 'openai', label: 'OpenAI', url: 'https://platform.openai.com/api-keys', prefix: 'sk-', icon: '🤖' },
+    { name: 'anthropic', label: 'Anthropic', url: 'https://console.anthropic.com/settings/keys', prefix: 'sk-ant-', icon: '🧠' },
+    { name: 'google', label: 'Google AI', url: 'https://aistudio.google.com/apikey', prefix: 'AI', icon: '🔍' },
+    { name: 'github', label: 'GitHub', url: 'https://github.com/settings/tokens', prefix: 'ghp_', icon: '🐙' },
+    { name: 'huggingface', label: 'Hugging Face', url: 'https://huggingface.co/settings/tokens', prefix: 'hf_', icon: '🤗' }
+  ];
+  var currentKeys = [];
 
-async function api(method, path, body) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
-  if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(path, opts);
-  return res.json();
-}
+  function api(method, path, body) {
+    var opts = { method: method, headers: { 'Authorization': 'Bearer ' + TOKEN } };
+    if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    return fetch(path, opts).then(function(r){
+      if (r.status === 401) { sessionStorage.removeItem('dk_token'); window.location.replace('/'); throw new Error('unauthorized'); }
+      return r.json();
+    });
+  }
 
-async function loadKeys() {
-  const data = await api('GET', '/api/keys');
-  currentKeys = data.keys || [];
-  render();
-}
+  function el(tag, props, children) {
+    var n = document.createElement(tag);
+    if (props) for (var k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'dataset') for (var d in props[k]) n.dataset[d] = props[k][d];
+      else if (k === 'text') n.textContent = props[k];
+      else if (k === 'attrs') for (var a in props[k]) n.setAttribute(a, props[k][a]);
+      else n[k] = props[k];
+    }
+    if (children) children.forEach(function(c){ if (c) n.appendChild(c); });
+    return n;
+  }
 
-function render() {
-  const storedSet = new Set(currentKeys.map(k => k.name));
-  const knownCount = SERVICES.filter(s => storedSet.has(s.name)).length;
-  const total = SERVICES.length;
+  function loadKeys() {
+    return api('GET', '/api/keys').then(function(data){ currentKeys = data.keys || []; render(); });
+  }
 
-  document.getElementById('progress-fill').style.width = (total > 0 ? Math.round((knownCount / total) * 100) : 0) + '%';
-  document.getElementById('progress-label').textContent =
-    currentKeys.length + ' key' + (currentKeys.length !== 1 ? 's' : '') + ' stored' +
-    (knownCount > 0 ? ' · ' + knownCount + '/' + total + ' services' : '');
+  function buildKnownCard(svc, stored, key) {
+    var headerTitle = el('div', { class: 'card-title' }, [
+      el('span', { class: 'card-label', text: svc.label }),
+      el('span', { class: 'card-name', text: svc.name })
+    ]);
+    var statusText = stored ? '✓ Stored' : '○ Not set';
+    var header = el('div', { class: 'card-header' }, [
+      el('span', { class: 'card-icon', text: svc.icon }),
+      headerTitle,
+      el('span', { class: 'card-status ' + (stored ? 'status-ok' : 'status-missing'), text: statusText })
+    ]);
 
-  let html = '<div class="section-label">AI Services</div>';
-
-  for (const svc of SERVICES) {
-    const stored = storedSet.has(svc.name);
-    const key = currentKeys.find(k => k.name === svc.name);
-    html += '<div class="card ' + (stored ? 'card-stored' : '') + '" data-name="' + svc.name + '">';
-    html += '<div class="card-header">';
-    html += '<span class="card-icon">' + svc.icon + '</span>';
-    html += '<div class="card-title"><span class="card-label">' + svc.label + '</span><span class="card-name">' + svc.name + '</span></div>';
-    html += '<span class="card-status ' + (stored ? 'status-ok' : 'status-missing') + '">' + (stored ? '✓ Stored' : '○ Not set') + '</span>';
-    html += '</div>';
+    var body;
     if (stored) {
-      html += '<div class="card-body">';
-      html += '<code class="masked-value">' + (key?.masked || '') + '</code>';
-      html += '<div class="card-actions">';
-      html += '<button class="btn btn-sm btn-ghost" onclick="editKey(\'' + svc.name + '\', \'' + svc.prefix + '\')">Update</button>';
-      html += '<button class="btn btn-sm btn-danger" onclick="deleteKey(\'' + svc.name + '\')">Remove</button>';
-      html += '</div></div>';
+      var maskedEl = el('code', { class: 'masked-value', text: (key && key.masked) || '' });
+      var updateBtn = el('button', { class: 'btn btn-sm btn-ghost', text: 'Update' });
+      updateBtn.addEventListener('click', function(){ beginEdit(svc.name, svc.prefix); });
+      var removeBtn = el('button', { class: 'btn btn-sm btn-danger', text: 'Remove' });
+      removeBtn.addEventListener('click', function(){ deleteKey(svc.name); });
+      body = el('div', { class: 'card-body' }, [
+        maskedEl,
+        el('div', { class: 'card-actions' }, [updateBtn, removeBtn])
+      ]);
     } else {
-      html += '<div class="card-body">';
-      html += '<div class="input-row">';
-      html += '<input type="password" id="input-' + svc.name + '" class="key-input" placeholder="' + svc.prefix + '..." spellcheck="false" autocomplete="off" />';
-      html += '<button class="btn btn-sm btn-toggle" onclick="toggleVis(\'input-' + svc.name + '\', this)">👁</button>';
-      html += '</div>';
-      html += '<div class="card-actions">';
-      html += '<button class="btn btn-primary" onclick="saveKey(\'' + svc.name + '\')">Save to Keychain</button>';
-      html += '<a href="' + svc.url + '" target="_blank" class="btn btn-link">Get key ↗</a>';
-      html += '</div></div>';
+      var input = el('input', { class: 'key-input', attrs: { type: 'password', placeholder: svc.prefix + '…', spellcheck: 'false', autocomplete: 'off' } });
+      var toggle = el('button', { class: 'btn btn-sm btn-toggle', text: '👁' });
+      toggle.addEventListener('click', function(){ toggleVis(input, toggle); });
+      var saveBtn = el('button', { class: 'btn btn-primary', text: 'Save to Keychain' });
+      saveBtn.addEventListener('click', function(){ saveValue(svc.name, input); });
+      input.addEventListener('keydown', function(e){ if (e.key === 'Enter') saveValue(svc.name, input); });
+      var getBtn = el('a', { class: 'btn btn-link', text: 'Get key ↗', attrs: { href: svc.url, target: '_blank', rel: 'noopener noreferrer' } });
+      body = el('div', { class: 'card-body' }, [
+        el('div', { class: 'input-row' }, [input, toggle]),
+        el('div', { class: 'card-actions' }, [saveBtn, getBtn])
+      ]);
     }
-    html += '</div>';
+    var card = el('div', { class: 'card ' + (stored ? 'card-stored' : ''), dataset: { name: svc.name } }, [header, body]);
+    return card;
   }
 
-  // Custom keys
-  const customKeys = currentKeys.filter(k => !SERVICES.some(s => s.name === k.name));
-  if (customKeys.length > 0) {
-    html += '<div class="section-label">Custom Keys</div>';
-    for (const k of customKeys) {
-      html += '<div class="card card-stored" data-name="' + k.name + '">';
-      html += '<div class="card-header"><span class="card-icon">🔑</span>';
-      html += '<div class="card-title"><span class="card-label">' + k.name + '</span><span class="card-name">custom</span></div>';
-      html += '<span class="card-status status-ok">✓ Stored</span></div>';
-      html += '<div class="card-body"><code class="masked-value">' + k.masked + '</code>';
-      html += '<div class="card-actions">';
-      html += '<button class="btn btn-sm btn-ghost" onclick="editKey(\'' + k.name + '\', \'\')">Update</button>';
-      html += '<button class="btn btn-sm btn-danger" onclick="deleteKey(\'' + k.name + '\')">Remove</button>';
-      html += '</div></div></div>';
+  function buildCustomCard(k) {
+    var header = el('div', { class: 'card-header' }, [
+      el('span', { class: 'card-icon', text: '🔑' }),
+      el('div', { class: 'card-title' }, [
+        el('span', { class: 'card-label', text: k.name }),
+        el('span', { class: 'card-name', text: 'custom' })
+      ]),
+      el('span', { class: 'card-status status-ok', text: '✓ Stored' })
+    ]);
+    var updateBtn = el('button', { class: 'btn btn-sm btn-ghost', text: 'Update' });
+    updateBtn.addEventListener('click', function(){ beginEdit(k.name, ''); });
+    var removeBtn = el('button', { class: 'btn btn-sm btn-danger', text: 'Remove' });
+    removeBtn.addEventListener('click', function(){ deleteKey(k.name); });
+    var body = el('div', { class: 'card-body' }, [
+      el('code', { class: 'masked-value', text: k.masked }),
+      el('div', { class: 'card-actions' }, [updateBtn, removeBtn])
+    ]);
+    return el('div', { class: 'card card-stored', dataset: { name: k.name } }, [header, body]);
+  }
+
+  function render() {
+    var storedSet = {};
+    currentKeys.forEach(function(k){ storedSet[k.name] = k; });
+    var knownCount = SERVICES.filter(function(s){ return storedSet[s.name]; }).length;
+    var total = SERVICES.length;
+
+    document.getElementById('progress-fill').style.width = (total > 0 ? Math.round((knownCount / total) * 100) : 0) + '%';
+    document.getElementById('progress-label').textContent =
+      currentKeys.length + ' key' + (currentKeys.length !== 1 ? 's' : '') + ' stored' +
+      (knownCount > 0 ? ' · ' + knownCount + '/' + total + ' services' : '');
+
+    var content = document.getElementById('content');
+    content.textContent = '';
+    content.appendChild(el('div', { class: 'section-label', text: 'AI Services' }));
+    SERVICES.forEach(function(svc){
+      content.appendChild(buildKnownCard(svc, !!storedSet[svc.name], storedSet[svc.name]));
+    });
+
+    var customKeys = currentKeys.filter(function(k){
+      return !SERVICES.some(function(s){ return s.name === k.name; });
+    });
+    if (customKeys.length > 0) {
+      content.appendChild(el('div', { class: 'section-label', text: 'Custom Keys' }));
+      customKeys.forEach(function(k){ content.appendChild(buildCustomCard(k)); });
     }
   }
 
-  document.getElementById('content').innerHTML = html;
-}
+  function beginEdit(name, prefix) {
+    var card = document.querySelector('[data-name="' + CSS.escape(name) + '"]');
+    if (!card) return;
+    var body = card.querySelector('.card-body');
+    if (!body) return;
+    body.textContent = '';
+    var input = el('input', { class: 'key-input', attrs: { type: 'password', placeholder: (prefix || '') + '…', spellcheck: 'false', autocomplete: 'off' } });
+    var toggle = el('button', { class: 'btn btn-sm btn-toggle', text: '👁' });
+    toggle.addEventListener('click', function(){ toggleVis(input, toggle); });
+    var save = el('button', { class: 'btn btn-primary btn-sm', text: 'Save' });
+    save.addEventListener('click', function(){ saveValue(name, input); });
+    var cancel = el('button', { class: 'btn btn-ghost btn-sm', text: 'Cancel' });
+    cancel.addEventListener('click', function(){ loadKeys(); });
+    input.addEventListener('keydown', function(e){ if (e.key === 'Enter') saveValue(name, input); });
+    body.appendChild(el('div', { class: 'input-row' }, [input, toggle]));
+    body.appendChild(el('div', { class: 'card-actions' }, [save, cancel]));
+    input.focus();
+  }
 
-async function saveKey(name) {
-  const input = document.getElementById('input-' + name);
-  if (!input?.value.trim()) { input?.focus(); return; }
-  await api('POST', '/api/keys', { name, value: input.value.trim() });
-  showToast('✓ Saved ' + name);
-  await loadKeys();
-}
+  function saveValue(name, input) {
+    var v = input && input.value ? input.value.trim() : '';
+    if (!v) { if (input) input.focus(); return; }
+    api('POST', '/api/keys', { name: name, value: v }).then(function(){
+      showToast('✓ Saved ' + name);
+      loadKeys();
+    });
+  }
 
-function editKey(name, prefix) {
-  const card = document.querySelector('[data-name="' + name + '"]');
-  if (!card) return;
-  const body = card.querySelector('.card-body');
-  body.innerHTML =
-    '<div class="input-row">' +
-      '<input type="password" id="edit-' + name + '" class="key-input" placeholder="' + prefix + '..." spellcheck="false" autocomplete="off" />' +
-      '<button class="btn btn-sm btn-toggle" onclick="toggleVis(\'edit-' + name + '\', this)">👁</button>' +
-    '</div>' +
-    '<div class="card-actions">' +
-      '<button class="btn btn-primary btn-sm" onclick="saveEdit(\'' + name + '\')">Save</button>' +
-      '<button class="btn btn-ghost btn-sm" onclick="loadKeys()">Cancel</button>' +
-    '</div>';
-  document.getElementById('edit-' + name)?.focus();
-}
+  function deleteKey(name) {
+    if (!confirm('Remove "' + name + '" from Keychain?')) return;
+    api('DELETE', '/api/keys/' + encodeURIComponent(name)).then(function(){
+      showToast('✓ Removed ' + name);
+      loadKeys();
+    });
+  }
 
-async function saveEdit(name) {
-  const input = document.getElementById('edit-' + name);
-  if (!input?.value.trim()) { input?.focus(); return; }
-  await api('POST', '/api/keys', { name, value: input.value.trim() });
-  showToast('✓ Updated ' + name);
-  await loadKeys();
-}
+  function saveCustom() {
+    var nameEl = document.getElementById('custom-name');
+    var valueEl = document.getElementById('custom-value');
+    var name = (nameEl && nameEl.value || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    var value = (valueEl && valueEl.value || '').trim();
+    if (!name) { if (nameEl) nameEl.focus(); return; }
+    if (!value) { if (valueEl) valueEl.focus(); return; }
+    api('POST', '/api/keys', { name: name, value: value }).then(function(){
+      nameEl.value = ''; valueEl.value = '';
+      showToast('✓ Saved ' + name);
+      loadKeys();
+    });
+  }
 
-async function deleteKey(name) {
-  if (!confirm('Remove "' + name + '" from Keychain?')) return;
-  await api('DELETE', '/api/keys/' + encodeURIComponent(name));
-  showToast('✓ Removed ' + name);
-  await loadKeys();
-}
+  function toggleVis(input, btn) {
+    input.type = input.type === 'password' ? 'text' : 'password';
+    btn.textContent = input.type === 'password' ? '👁' : '🙈';
+  }
 
-async function saveCustom() {
-  const nameEl = document.getElementById('custom-name');
-  const valueEl = document.getElementById('custom-value');
-  const name = nameEl?.value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
-  const value = valueEl?.value.trim();
-  if (!name) { nameEl?.focus(); return; }
-  if (!value) { valueEl?.focus(); return; }
-  await api('POST', '/api/keys', { name, value });
-  nameEl.value = '';
-  valueEl.value = '';
-  showToast('✓ Saved ' + name);
-  await loadKeys();
-}
+  function showToast(msg) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(function(){ t.classList.remove('show'); }, 2200);
+  }
 
-function toggleVis(id, btn) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.type = el.type === 'password' ? 'text' : 'password';
-  btn.textContent = el.type === 'password' ? '👁' : '🙈';
-}
+  document.getElementById('save-custom').addEventListener('click', saveCustom);
+  document.getElementById('toggle-custom').addEventListener('click', function(){
+    var v = document.getElementById('custom-value');
+    toggleVis(v, this);
+  });
+  document.getElementById('custom-value').addEventListener('keydown', function(e){ if (e.key === 'Enter') saveCustom(); });
+  document.getElementById('refresh-btn').addEventListener('click', loadKeys);
 
-function showToast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2200);
-}
+  var es = new EventSource('/events?t=' + encodeURIComponent(TOKEN));
+  es.addEventListener('refresh', function(){ loadKeys(); });
+  es.addEventListener('connected', function(){ loadKeys(); });
+  es.addEventListener('error', function(){});
 
-// Enter key in inputs
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter') return;
-  const t = e.target;
-  if (t?.id?.startsWith('input-')) saveKey(t.id.replace('input-', ''));
-  else if (t?.id?.startsWith('edit-')) saveEdit(t.id.replace('edit-', ''));
-  else if (t?.id === 'custom-value') saveCustom();
-});
-
-// SSE for live sync (other tabs / CLI changes)
-const es = new EventSource('/events');
-es.addEventListener('refresh', () => loadKeys());
-es.addEventListener('connected', () => loadKeys());
-
-// Initial load
-loadKeys();
+  loadKeys();
+})();
 </script>
-</body>
-</html>`;
+</body></html>`;
 }
 
-// ── Start ────────────────────────��──────────────────────────────────
+// ── Start ───────────────────────────────────────────────────────────
 
 server.listen(PORT, '127.0.0.1', () => {
-  const url = `http://localhost:${PORT}`;
-  console.log(`\n  🔐 dev-keys UI running at ${url}\n`);
+  const url = `http://127.0.0.1:${PORT}/?t=${TOKEN}`;
+  console.log(`\n  🔐 dev-keys UI running at http://127.0.0.1:${PORT}`);
+  console.log(`  Open this URL (includes one-time session token):`);
+  console.log(`  ${url}\n`);
 
-  // Open in default browser
   if (process.argv.includes('--no-open')) { return; }
   try { execFileSync('open', [url]); } catch {}
 });
 
-// Graceful shutdown
 process.on('SIGINT', () => { server.close(); process.exit(0); });
 process.on('SIGTERM', () => { server.close(); process.exit(0); });
