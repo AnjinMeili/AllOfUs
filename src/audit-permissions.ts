@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { applyEdits, modify, parse as parseJsonc } from 'jsonc-parser';
 
 type Scope = 'all' | 'project';
 type OutputFormat = 'text' | 'json' | 'web';
@@ -23,6 +24,7 @@ interface AuditOptions {
   snapshotName: string;
   fromWorkdir?: string;
   toWorkdir?: string;
+  apply: boolean;
 }
 
 interface SnapshotFile {
@@ -74,10 +76,16 @@ function parseArgs(argv: string[]): AuditOptions {
   let snapshotName = 'latest';
   let fromWorkdir: string | undefined;
   let toWorkdir: string | undefined;
+  let apply = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
+
+    if (arg === '--apply') {
+      apply = true;
+      continue;
+    }
 
     if (arg === '--mode' && (next === 'audit' || next === 'fix' || next === 'snapshot' || next === 'restore' || next === 'copy')) {
       mode = next;
@@ -167,6 +175,7 @@ function parseArgs(argv: string[]): AuditOptions {
     snapshotName,
     fromWorkdir,
     toWorkdir,
+    apply,
   };
 }
 
@@ -182,6 +191,7 @@ function printHelp(): void {
     '  --output PATH         Write report to file',
     '  --target global|user|workdir   Fix target scope (default: workdir)',
     '  --yes-global          Required acknowledgement for global fix target',
+    '  --apply               Actually write changes (fix mode is dry-run otherwise)',
     '  --open-browser        Open output web report in default browser',
     '  --interactive         Enable interactive web controls for web output',
     '  --snapshot NAME       Snapshot name for snapshot/restore (default: latest)',
@@ -210,8 +220,8 @@ function getSnapshotPath(projectPath: string, snapshotName: string): string {
 }
 
 function ensureParentDir(path: string): void {
-  const parent = path.slice(0, path.lastIndexOf('/'));
-  if (parent && !existsSync(parent)) {
+  const parent = dirname(path);
+  if (parent && parent !== path && !existsSync(parent)) {
     mkdirSync(parent, { recursive: true });
   }
 }
@@ -394,7 +404,13 @@ function renderAuditWeb(report: AuditReport, interactive: boolean): string {
     byLayer[finding.layer].push(finding);
   }
 
-  const payload = JSON.stringify(report);
+  // Escape "<" so a literal "</script>" inside any string field cannot
+  // terminate the inline <script> tag early. Belt-and-braces: also escape
+  // U+2028 / U+2029 which are valid in JSON strings but not in JS source.
+  const payload = JSON.stringify(report)
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
   const layers = Object.keys(byLayer);
 
   const layerControls = layers
@@ -773,11 +789,6 @@ function renderAuditWeb(report: AuditReport, interactive: boolean): string {
 </html>`;
 }
 
-function writeJsonFile(path: string, data: Record<string, unknown>): void {
-  ensureParentDir(path);
-  writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`, 'utf-8');
-}
-
 function safeRead(path: string): string | undefined {
   if (!existsSync(path)) return undefined;
   try {
@@ -787,19 +798,22 @@ function safeRead(path: string): string | undefined {
   }
 }
 
-function stripJsonComments(content: string): string {
-  const withoutBlock = content.replace(/\/\*[\s\S]*?\*\//g, '');
-  return withoutBlock
-    .split('\n')
-    .map((line) => line.replace(/(^|[^:])\/\/.*$/g, '$1'))
-    .join('\n');
-}
-
+/**
+ * Parse a JSONC file (tolerates // line comments, /* block comments *\/,
+ * and trailing commas). Returns undefined if the file is missing or
+ * malformed.
+ *
+ * Reads only — comment-preserving writes go through jsonc-parser's
+ * modify/applyEdits pipeline, never JSON.stringify.
+ */
 function parseJsonFile(path: string): Record<string, unknown> | undefined {
   const content = safeRead(path);
-  if (!content) return undefined;
+  if (content === undefined) return undefined;
   try {
-    return JSON.parse(stripJsonComments(content)) as Record<string, unknown>;
+    const errors: unknown[] = [];
+    const value = parseJsonc(content, errors as never, { allowTrailingComma: true });
+    if (errors.length > 0) return undefined;
+    return (value ?? {}) as Record<string, unknown>;
   } catch {
     return undefined;
   }
@@ -1189,13 +1203,66 @@ function formatText(report: AuditReport): string {
   return lines.join('\n');
 }
 
-function runFix(options: AuditOptions): { changed: string[]; warnings: string[] } {
+interface PlannedEdit {
+  jsonPath: (string | number)[];
+  newValue: unknown;
+  description: string;
+}
+
+interface FilePlan {
+  filePath: string;
+  existed: boolean;
+  oldText: string;
+  newText: string;
+  edits: Array<{ description: string; before: unknown; after: unknown }>;
+}
+
+function getAtPath(obj: unknown, path: (string | number)[]): unknown {
+  let cur: unknown = obj;
+  for (const segment of path) {
+    if (cur === null || typeof cur !== 'object') return undefined;
+    cur = (cur as Record<string | number, unknown>)[segment];
+  }
+  return cur;
+}
+
+function valueEq(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Plan a set of edits against a JSONC file without writing. Uses
+ * jsonc-parser's modify/applyEdits pipeline, which preserves comments,
+ * trailing commas, and existing formatting on round-trip.
+ */
+function planJsoncFile(filePath: string, edits: PlannedEdit[]): FilePlan {
+  const existed = existsSync(filePath);
+  const oldText = existed ? (safeRead(filePath) ?? '') : '';
+  let newText = oldText.length > 0 ? oldText : '{}\n';
+  const parsed = parseJsonc(newText) as unknown ?? {};
+  const changes: FilePlan['edits'] = [];
+
+  for (const edit of edits) {
+    const before = getAtPath(parsed, edit.jsonPath);
+    if (valueEq(before, edit.newValue)) continue;
+
+    const editList = modify(newText, edit.jsonPath, edit.newValue, {
+      formattingOptions: { tabSize: 2, insertSpaces: true, eol: '\n' },
+    });
+    newText = applyEdits(newText, editList);
+    changes.push({ description: edit.description, before, after: edit.newValue });
+  }
+
+  return { filePath, existed, oldText, newText, edits: changes };
+}
+
+function planFix(options: AuditOptions): { plans: FilePlan[]; warnings: string[] } {
   const projectPath = resolve(options.projectPath);
   const userSettingsPath = getUserSettingsPath();
   const workspaceSettingsPath = getWorkspaceSettingsPath(projectPath);
   const claudeSettingsPath = getClaudeSettingsPath(projectPath);
 
-  const changed: string[] = [];
+  const plans: FilePlan[] = [];
   const warnings: string[] = [];
 
   if (options.target === 'global' && !options.yesGlobal) {
@@ -1210,36 +1277,45 @@ function runFix(options: AuditOptions): { changed: string[]; warnings: string[] 
 
   const shouldFixUser = options.target === 'user' || options.target === 'global';
   const shouldFixWorkdir = options.target === 'workdir' || options.target === 'global';
+  const skipKey = 'github.copilot.chat.claudeAgent.allowDangerouslySkipPermissions';
 
   if (shouldFixUser) {
-    const userSettings = parseJsonFile(userSettingsPath) ?? {};
-    const prior = userSettings['github.copilot.chat.claudeAgent.allowDangerouslySkipPermissions'];
-    userSettings['github.copilot.chat.claudeAgent.allowDangerouslySkipPermissions'] = false;
-    writeJsonFile(userSettingsPath, userSettings);
-    changed.push(`Updated user setting at ${userSettingsPath}`);
-
-    if (prior === true) {
-      warnings.push('Disabled dangerous Copilot skip-permissions flag in VS Code user settings.');
-    }
+    const plan = planJsoncFile(userSettingsPath, [
+      {
+        jsonPath: [skipKey],
+        newValue: false,
+        description: `Disable Copilot "${skipKey}"`,
+      },
+    ]);
+    if (plan.edits.length > 0) plans.push(plan);
   }
 
   if (shouldFixWorkdir) {
-    const workspaceSettings = parseJsonFile(workspaceSettingsPath) ?? {};
-    workspaceSettings['github.copilot.chat.claudeAgent.allowDangerouslySkipPermissions'] = false;
-    writeJsonFile(workspaceSettingsPath, workspaceSettings);
-    changed.push(`Updated workspace setting at ${workspaceSettingsPath}`);
+    const wsPlan = planJsoncFile(workspaceSettingsPath, [
+      {
+        jsonPath: [skipKey],
+        newValue: false,
+        description: `Disable Copilot "${skipKey}" in workspace`,
+      },
+    ]);
+    if (wsPlan.edits.length > 0) plans.push(wsPlan);
 
+    // Narrow Claude allowlist: only plan an edit if broad patterns are
+    // actually present. This avoids touching files that are already safe.
     const claudeSettings = parseJsonFile(claudeSettingsPath);
-    if (claudeSettings && typeof claudeSettings === 'object') {
-      const permissions = claudeSettings.permissions as { allow?: unknown } | undefined;
-      if (permissions && Array.isArray(permissions.allow)) {
-        const original = permissions.allow.filter((x) => typeof x === 'string');
-        const narrowed = original.filter((entry) => !includesAny(entry, ['Bash(*)', 'WebFetch(*)', 'File(*)', 'AllowAll']));
-        if (narrowed.length !== original.length) {
-          claudeSettings.permissions = { ...permissions, allow: narrowed };
-          writeJsonFile(claudeSettingsPath, claudeSettings);
-          changed.push(`Narrowed Claude allowlist at ${claudeSettingsPath}`);
-        }
+    const permissions = (claudeSettings?.permissions as { allow?: unknown } | undefined);
+    if (Array.isArray(permissions?.allow)) {
+      const original = permissions.allow.filter((x): x is string => typeof x === 'string');
+      const narrowed = original.filter((entry) => !includesAny(entry, ['Bash(*)', 'WebFetch(*)', 'File(*)', 'AllowAll']));
+      if (narrowed.length !== original.length) {
+        const plan = planJsoncFile(claudeSettingsPath, [
+          {
+            jsonPath: ['permissions', 'allow'],
+            newValue: narrowed,
+            description: 'Narrow Claude allowlist (remove Bash(*), WebFetch(*), File(*), AllowAll)',
+          },
+        ]);
+        if (plan.edits.length > 0) plans.push(plan);
       }
     }
   }
@@ -1249,7 +1325,18 @@ function runFix(options: AuditOptions): { changed: string[]; warnings: string[] 
     warnings.push('Global fix mode does not alter macOS TCC permissions; review those manually in System Settings.');
   }
 
-  return { changed, warnings };
+  return { plans, warnings };
+}
+
+function applyFix(plans: FilePlan[]): string[] {
+  const written: string[] = [];
+  for (const plan of plans) {
+    if (plan.edits.length === 0) continue;
+    ensureParentDir(plan.filePath);
+    writeFileSync(plan.filePath, plan.newText, 'utf-8');
+    written.push(plan.filePath);
+  }
+  return written;
 }
 
 function main(): void {
@@ -1320,30 +1407,44 @@ function main(): void {
   }
 
   if (options.mode === 'fix') {
-    const result = runFix(options);
+    const { plans, warnings } = planFix(options);
     const lines: string[] = [];
 
     lines.push('Permissions Fix Report');
     lines.push(`Target: ${options.target}`);
     lines.push(`Project: ${resolve(options.projectPath)}`);
     lines.push(`Timestamp: ${new Date().toISOString()}`);
+    lines.push(`Mode: ${options.apply ? 'apply (writing)' : 'dry-run (pass --apply to write)'}`);
     lines.push('');
 
-    if (result.warnings.length > 0) {
+    if (warnings.length > 0) {
       lines.push('Warnings');
-      for (const warning of result.warnings) {
-        lines.push(`- ${warning}`);
-      }
+      for (const warning of warnings) lines.push(`- ${warning}`);
       lines.push('');
     }
 
-    lines.push('Changes');
-    if (result.changed.length === 0) {
-      lines.push('- No changes were required.');
+    lines.push('Planned changes');
+    if (plans.length === 0) {
+      lines.push('- No changes required.');
     } else {
-      for (const change of result.changed) {
-        lines.push(`- ${change}`);
+      for (const plan of plans) {
+        lines.push(`- ${plan.filePath}${plan.existed ? '' : ' (new file)'}`);
+        for (const edit of plan.edits) {
+          lines.push(`    • ${edit.description}`);
+          lines.push(`      before: ${JSON.stringify(edit.before)}`);
+          lines.push(`      after:  ${JSON.stringify(edit.after)}`);
+        }
       }
+    }
+
+    if (options.apply && plans.length > 0) {
+      const written = applyFix(plans);
+      lines.push('');
+      lines.push('Written');
+      for (const p of written) lines.push(`- ${p}`);
+    } else if (!options.apply && plans.length > 0) {
+      lines.push('');
+      lines.push('No files were written. Rerun with --apply to commit the changes above.');
     }
 
     const renderedFix = lines.join('\n');

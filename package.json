@@ -29,7 +29,9 @@
   ],
   "author": "AnjinMeili",
   "license": "MIT",
-  "os": ["darwin"],
+  "os": [
+    "darwin"
+  ],
   "engines": {
     "node": ">=18"
   },
@@ -44,6 +46,7 @@
     "@openrouter/sdk": "^0.11.2",
     "eventemitter3": "^5.0.4",
     "ink": "^6.8.0",
+    "jsonc-parser": "^3.3.1",
     "react": "^19.2.4",
     "zod": "^4.3.6"
   },
