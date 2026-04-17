@@ -13,55 +13,26 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createKeyStore } from './keystore.js';
 
-const SERVICE = 'dev-api-keys';
 const PORT = parseInt(process.env.DEV_KEYS_PORT ?? '9876', 10);
 const TOKEN = randomBytes(32).toString('hex');
 const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
-
-// ── Keychain helpers (sync, fine for a local tool) ──────────────────
-
-function kcGet(name: string): string | undefined {
-  try {
-    return execFileSync(
-      'security', ['find-generic-password', '-s', SERVICE, '-a', name, '-w'],
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-    ).trim();
-  } catch { return undefined; }
-}
-
-function kcSet(name: string, value: string): void {
-  try { execFileSync('security', ['delete-generic-password', '-s', SERVICE, '-a', name], { stdio: 'pipe' }); } catch {}
-  execFileSync('security', ['add-generic-password', '-s', SERVICE, '-a', name, '-w', value, '-U'], { stdio: 'pipe' });
-}
-
-function kcDelete(name: string): void {
-  execFileSync('security', ['delete-generic-password', '-s', SERVICE, '-a', name], { stdio: 'pipe' });
-}
-
-function kcList(): string[] {
-  try {
-    const dump = execFileSync('security', ['dump-keychain'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-    const names: string[] = [];
-    const lines = dump.split('\n');
-    let found = false;
-    for (const line of lines) {
-      if (line.includes('0x00000007 <blob>=') && line.includes(`"${SERVICE}"`)) { found = true; continue; }
-      if (found && line.includes('"acct"<blob>=')) {
-        const m = line.match(/="([^"]*)"/);
-        if (m?.[1]) names.push(m[1]);
-        found = false;
-      }
-      if (line.startsWith('keychain:') || line.startsWith('class:')) found = false;
-    }
-    return [...new Set(names)].sort();
-  } catch { return []; }
-}
+const keyStore = createKeyStore();
 
 function mask(value: string): string {
   const len = value.length;
   const show = len <= 8 ? 2 : 4;
   return value.slice(0, show) + '•'.repeat(Math.min(len - show, 24));
+}
+
+async function getKeysPayload(): Promise<Array<{ name: string; masked: string }>> {
+  const names = await keyStore.list();
+  const values = await Promise.all(names.map((n) => keyStore.get(n)));
+  return names.map((name, i) => ({
+    name,
+    masked: values[i] ? mask(values[i] as string) : '',
+  }));
 }
 
 // ── Auth ────────────────────────────────────────────────────────────
@@ -95,16 +66,6 @@ function broadcast(event: string, data: unknown): void {
   for (const res of sseClients) {
     try { res.write(msg); } catch { sseClients.delete(res); }
   }
-}
-
-// ── API data ────────────────────────────────────────────────────────
-
-function getKeysPayload() {
-  const names = kcList();
-  return names.map(name => {
-    const value = kcGet(name);
-    return { name, masked: value ? mask(value) : '' };
-  });
 }
 
 // ── HTTP server ─────────────────────────────────────────────────────
@@ -172,7 +133,7 @@ const server = createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/keys' && req.method === 'GET') {
-    return json(res, 200, { keys: getKeysPayload() });
+    return json(res, 200, { keys: await getKeysPayload() });
   }
 
   if (url.pathname === '/api/keys' && req.method === 'POST') {
@@ -185,7 +146,7 @@ const server = createServer(async (req, res) => {
     if (!/^[a-z0-9_-]{1,64}$/i.test(body.name)) {
       return json(res, 400, { error: 'invalid name (use [a-z0-9_-], 1-64 chars)' });
     }
-    kcSet(body.name, body.value);
+    await keyStore.set(body.name, body.value);
     broadcast('refresh', {});
     return json(res, 200, { ok: true, name: body.name });
   }
@@ -195,7 +156,8 @@ const server = createServer(async (req, res) => {
     if (!/^[a-z0-9_-]{1,64}$/i.test(name)) {
       return json(res, 400, { error: 'invalid name' });
     }
-    try { kcDelete(name); } catch { return json(res, 404, { error: 'not found' }); }
+    try { await keyStore.delete(name); }
+    catch { return json(res, 404, { error: 'not found' }); }
     broadcast('refresh', {});
     return json(res, 200, { ok: true, name });
   }

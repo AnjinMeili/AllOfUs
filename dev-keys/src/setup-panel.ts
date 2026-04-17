@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
-import * as keychain from './keychain.js';
+import { createKeyStore } from './keystore.js';
+
+const keyStore = createKeyStore();
 
 /** Well-known services with metadata for the setup UI */
 const KNOWN_SERVICES = [
@@ -47,7 +49,7 @@ export function showSetupPanel(context: vscode.ExtensionContext, onKeysChanged: 
         case 'saveCustom': {
           if (!msg.name || !msg.value) { break; }
           if (!/^[a-z0-9_-]{1,64}$/i.test(msg.name)) { break; }
-          await keychain.setKey(msg.name, msg.value);
+          await keyStore.set(msg.name, msg.value);
           onKeysChanged();
           await pushState();
           panel.webview.postMessage({ type: 'saved', name: msg.name });
@@ -57,7 +59,7 @@ export function showSetupPanel(context: vscode.ExtensionContext, onKeysChanged: 
         case 'delete': {
           if (!msg.name) { break; }
           if (!/^[a-z0-9_-]{1,64}$/i.test(msg.name)) { break; }
-          await keychain.deleteKey(msg.name);
+          await keyStore.delete(msg.name);
           onKeysChanged();
           await pushState();
           panel.webview.postMessage({ type: 'deleted', name: msg.name });
@@ -87,8 +89,8 @@ export function showSetupPanel(context: vscode.ExtensionContext, onKeysChanged: 
 async function pushState(): Promise<void> {
   if (!currentPanel) { return; }
 
-  const storedNames = await keychain.listKeys();
-  const values = await Promise.all(storedNames.map(name => keychain.getKey(name)));
+  const storedNames = await keyStore.list();
+  const values = await Promise.all(storedNames.map(name => keyStore.get(name)));
   const keys = storedNames.map((name, i) => ({
     name,
     masked: maskValue(values[i] ?? ''),

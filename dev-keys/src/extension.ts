@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
-import * as keychain from './keychain.js';
+import { createKeyStore } from './keystore.js';
 import { showSetupPanel } from './setup-panel.js';
+
+const keyStore = createKeyStore();
 
 const PROVIDER_ID = 'dev-api-keys';
 const PROVIDER_LABEL = 'Dev API Keys (Keychain)';
@@ -43,7 +45,7 @@ class DevKeysAuthProvider implements vscode.AuthenticationProvider {
     if (!scopes || scopes.length !== 1) { return []; }
     const name = scopes[0];
     if (!VALID_KEY_NAME.test(name)) { return []; }
-    const value = await keychain.getKey(name);
+    const value = await keyStore.get(name);
     return value ? [keyToSession(name, value)] : [];
   }
 
@@ -67,7 +69,7 @@ class DevKeysAuthProvider implements vscode.AuthenticationProvider {
       throw new Error('Valid key name is required (use [a-z0-9_-], 1-64 chars).');
     }
 
-    const existing = await keychain.getKey(name);
+    const existing = await keyStore.get(name);
     if (existing) { return keyToSession(name, existing); }
 
     const value = await vscode.window.showInputBox({
@@ -77,7 +79,7 @@ class DevKeysAuthProvider implements vscode.AuthenticationProvider {
     });
     if (!value) { throw new Error('API key value is required'); }
 
-    await keychain.setKey(name, value);
+    await keyStore.set(name, value);
     const session = keyToSession(name, value);
     this._onDidChangeSessions.fire({ added: [session], removed: undefined, changed: undefined });
     return session;
@@ -85,9 +87,9 @@ class DevKeysAuthProvider implements vscode.AuthenticationProvider {
 
   async removeSession(sessionId: string): Promise<void> {
     if (!VALID_KEY_NAME.test(sessionId)) { return; }
-    const value = await keychain.getKey(sessionId);
+    const value = await keyStore.get(sessionId);
     if (value) {
-      await keychain.deleteKey(sessionId);
+      await keyStore.delete(sessionId);
       const session = keyToSession(sessionId, value);
       this._onDidChangeSessions.fire({ added: undefined, removed: [session], changed: undefined });
     }
@@ -133,7 +135,7 @@ export function activate(context: vscode.ExtensionContext) {
         placeHolder: 'sk-...',
       });
       if (!value) { return; }
-      await keychain.setKey(name, value);
+      await keyStore.set(name, value);
       onKeysChanged();
       vscode.window.showInformationMessage(`Stored key: ${name}`);
     }),
@@ -141,7 +143,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('dev-keys.removeKey', async () => {
-      const names = await keychain.listKeys();
+      const names = await keyStore.list();
       if (names.length === 0) {
         vscode.window.showInformationMessage('No keys stored.');
         return;
@@ -155,7 +157,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('dev-keys.listKeys', async () => {
-      const names = await keychain.listKeys();
+      const names = await keyStore.list();
       if (names.length === 0) {
         vscode.window.showInformationMessage('No keys stored.');
         return;
