@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { applyEdits, modify, parse as parseJsonc } from 'jsonc-parser';
+import { parse as parseJsonc } from 'jsonc-parser';
+import { planJsoncEdits, type PlannedEdit } from './jsonc-edit.js';
 
 type Scope = 'all' | 'project';
 type OutputFormat = 'text' | 'json' | 'web';
@@ -1203,12 +1204,6 @@ function formatText(report: AuditReport): string {
   return lines.join('\n');
 }
 
-interface PlannedEdit {
-  jsonPath: (string | number)[];
-  newValue: unknown;
-  description: string;
-}
-
 interface FilePlan {
   filePath: string;
   existed: boolean;
@@ -1217,43 +1212,21 @@ interface FilePlan {
   edits: Array<{ description: string; before: unknown; after: unknown }>;
 }
 
-function getAtPath(obj: unknown, path: (string | number)[]): unknown {
-  let cur: unknown = obj;
-  for (const segment of path) {
-    if (cur === null || typeof cur !== 'object') return undefined;
-    cur = (cur as Record<string | number, unknown>)[segment];
-  }
-  return cur;
-}
-
-function valueEq(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
 /**
- * Plan a set of edits against a JSONC file without writing. Uses
- * jsonc-parser's modify/applyEdits pipeline, which preserves comments,
- * trailing commas, and existing formatting on round-trip.
+ * Wrap planJsoncEdits with filesystem I/O. The text-level plumbing
+ * (modify, applyEdits, skipping no-op edits) lives in ./jsonc-edit.ts.
  */
 function planJsoncFile(filePath: string, edits: PlannedEdit[]): FilePlan {
   const existed = existsSync(filePath);
   const oldText = existed ? (safeRead(filePath) ?? '') : '';
-  let newText = oldText.length > 0 ? oldText : '{}\n';
-  const parsed = parseJsonc(newText) as unknown ?? {};
-  const changes: FilePlan['edits'] = [];
-
-  for (const edit of edits) {
-    const before = getAtPath(parsed, edit.jsonPath);
-    if (valueEq(before, edit.newValue)) continue;
-
-    const editList = modify(newText, edit.jsonPath, edit.newValue, {
-      formattingOptions: { tabSize: 2, insertSpaces: true, eol: '\n' },
-    });
-    newText = applyEdits(newText, editList);
-    changes.push({ description: edit.description, before, after: edit.newValue });
-  }
-
-  return { filePath, existed, oldText, newText, edits: changes };
+  const plan = planJsoncEdits(oldText, edits);
+  return {
+    filePath,
+    existed,
+    oldText: plan.oldText,
+    newText: plan.newText,
+    edits: plan.edits,
+  };
 }
 
 function planFix(options: AuditOptions): { plans: FilePlan[]; warnings: string[] } {

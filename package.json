@@ -8,6 +8,7 @@
     "start:headless": "tsx src/headless.ts",
     "dev": "tsx watch src/cli.tsx",
     "check": "tsc --noEmit",
+    "test": "vitest run",
     "build": "tsc",
     "build:all": "npm run build && cd dev-keys && npm run build:all",
     "install:ext": "cd dev-keys && npm run install:vsix",
@@ -54,6 +55,7 @@
     "@types/node": "^25.5.2",
     "@types/react": "^19.2.14",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4"
   }
 }

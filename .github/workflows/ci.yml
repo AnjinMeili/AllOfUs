@@ -32,6 +32,9 @@ jobs:
       - name: Type-check dev-keys
         run: cd dev-keys && npx tsc --noEmit
 
+      - name: Run tests
+        run: npm test
+
   build:
     name: Build
     runs-on: macos-latest

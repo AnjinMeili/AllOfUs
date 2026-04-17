@@ -20,8 +20,10 @@ export const timeTool = tool({
  * Parse and evaluate an arithmetic expression with + - * / and parentheses.
  * No identifiers, no function calls, no property access — just numbers and
  * the five binary ops. Safer than `Function()` / `eval()`.
+ *
+ * Exported for tests.
  */
-function evalArithmetic(expression: string): number {
+export function evalArithmetic(expression: string): number {
   const s = expression;
   let i = 0;
 
