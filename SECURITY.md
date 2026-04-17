@@ -18,7 +18,11 @@ You can expect an initial response within 72 hours.
 
 ## Security Considerations
 
-- **API keys** are stored in macOS Keychain, encrypted at rest by the OS
-- The `dev-keys` CLI uses the `security` command-line tool — keys are never written to disk in plaintext
-- The VS Code extension accesses Keychain via child process (`security find-generic-password`), not via Node.js native addons
+- API keys are stored in macOS Keychain, encrypted at rest by the OS
+- All Keychain access goes through the `security` CLI — no native Node addons
+- The `dev-keys ui` web server binds to `127.0.0.1`, validates the `Host`
+  header (blocks DNS rebinding), and requires a per-launch session token
 - Never commit `.env` files or API keys to version control
+- Keys exported via `with-key` or `dev-keys env` live in the process
+  environment and may be observable to other processes running as the same
+  user — see [THREAT_MODEL.md](THREAT_MODEL.md) for the full scope

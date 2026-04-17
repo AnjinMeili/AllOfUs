@@ -404,10 +404,14 @@ AllOfUs/
 ## Security
 
 - API keys are stored in macOS Keychain, encrypted at rest by the OS
-- The CLI uses the `security` command -- keys never touch disk as plaintext
-- The VS Code extension accesses Keychain via child process, not native addons
+- The `security` CLI is used for all Keychain access — no native Node addons
 - `.gitignore` excludes `.env` files
-- See [SECURITY.md](SECURITY.md) for vulnerability reporting
+- The `dev-keys ui` server binds to `127.0.0.1`, validates the `Host`
+  header, and requires a per-launch session token on every request
+- Keys reachable in environment variables (via `with-key` or `dev-keys env`)
+  are visible to child processes and may be captured by `ps` or shell history
+- See [THREAT_MODEL.md](THREAT_MODEL.md) for what is and isn't defended
+  against, and [SECURITY.md](SECURITY.md) for vulnerability reporting
 
 ## Contributing
 
