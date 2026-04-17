@@ -30,9 +30,6 @@
   ],
   "author": "AnjinMeili",
   "license": "MIT",
-  "os": [
-    "darwin"
-  ],
   "engines": {
     "node": ">=18"
   },
