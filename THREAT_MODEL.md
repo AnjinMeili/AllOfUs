@@ -56,7 +56,13 @@ does not cover, so you can decide whether the tool fits your situation.
   HashiCorp Vault, 1Password Connect, or AWS Secrets Manager for those.
 - **Key rotation, expiry, or access audit.** dev-keys does not rotate,
   expire, or log access. Keys live in Keychain until you delete them.
-- **Cross-platform support.** macOS only. No Linux or Windows.
+- **Cross-platform caveats.** Linux and Windows support ships via
+  `@napi-rs/keyring` (Secret Service / Credential Manager). A small
+  name-index file (`~/.config/dev-keys/names.json` or
+  `%APPDATA%/dev-keys/names.json`) records key *names* so the UI can
+  list them — no secret values are stored in that file. Deleting it is
+  non-destructive: secrets stay in the OS credential store, you just
+  lose the list view until keys are re-added.
 - **The agent's API calls.** The agent sends prompts and tool results
   to OpenRouter. Keys are never sent as content, but anything you type
   into a prompt reaches the model provider.
