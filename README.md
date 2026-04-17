@@ -109,9 +109,19 @@ const apiKey = session.accessToken;
 
 ### Requirements
 
-- **macOS** (uses Keychain via the `security` CLI)
 - **Node.js** >= 18
 - [OpenRouter API key](https://openrouter.ai/settings/keys) (for the agent)
+
+Platform support:
+
+| Component | macOS | Linux | Windows |
+|---|---|---|---|
+| Bash CLI (`dev-keys`) | ✓ (Keychain via `security` CLI) | — | — |
+| VS Code extension | ✓ | ✓ (Secret Service) | ✓ (Credential Manager) |
+| Web UI (`dev-keys ui`) | ✓ | needs Node launcher | needs Node launcher |
+| Agent (`npm start`) | ✓ | — | — |
+
+Cross-platform secret access goes through [`@napi-rs/keyring`](https://github.com/Brooooooklyn/keyring-node); the bash CLI and the agent's `get-key.ts` still shell out to `security` and therefore stay macOS-only for now.
 
 ### Install Everything
 
