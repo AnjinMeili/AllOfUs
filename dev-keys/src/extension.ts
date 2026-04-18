@@ -175,7 +175,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('No keys stored.');
         return;
       }
-      const items = names.map(n => ({ label: n, description: 'macOS Keychain · select to validate' }));
+      const items = names.map(n => ({ label: n, description: 'Secure keystore · select to validate' }));
       const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Stored API keys' });
       if (!picked) { return; }
       const result = await validateStoredKey(picked.label, keyStore);

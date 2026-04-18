@@ -3,7 +3,6 @@ import { randomBytes } from 'node:crypto';
 import { createKeyStore } from './keystore.js';
 import {
   listCustomServices,
-  normalizeServiceName,
   removeCustomService,
   saveCustomService,
 } from './service-metadata.js';
@@ -93,6 +92,7 @@ export function showSetupPanel(context: vscode.ExtensionContext, onKeysChanged: 
 
         case 'validate': {
           if (!msg.name) { break; }
+          if (!/^[a-z0-9_-]{1,64}$/i.test(msg.name)) { break; }
           const result = await validateStoredKey(msg.name, keyStore);
           panel.webview.postMessage({ type: 'validated', name: msg.name, ok: result.ok, message: result.message });
           break;

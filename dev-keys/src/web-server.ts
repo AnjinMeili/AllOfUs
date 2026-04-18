@@ -14,7 +14,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { execFileSync } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createKeyStore } from './keystore.js';
-import { getCustomService, removeCustomService, saveCustomService } from './service-metadata.js';
+import { listCustomServices, removeCustomService, saveCustomService } from './service-metadata.js';
 import { KNOWN_SERVICES, validateKey, validateStoredKey } from './validation.js';
 
 const PORT = parseInt(process.env.DEV_KEYS_PORT ?? '9876', 10);
@@ -31,9 +31,10 @@ function mask(value: string): string {
 async function getKeysPayload(): Promise<Array<{ name: string; label: string; masked: string }>> {
   const names = await keyStore.list();
   const values = await Promise.all(names.map((n) => keyStore.get(n)));
+  const customLabelMap = new Map(listCustomServices().map((service) => [service.name, service.label]));
   return names.map((name, i) => ({
     name,
-    label: getCustomService(name)?.label ?? name,
+    label: customLabelMap.get(name) ?? name,
     masked: values[i] ? mask(values[i] as string) : '',
   }));
 }
@@ -144,11 +145,15 @@ const server = createServer(async (req, res) => {
     try { body = JSON.parse(await readBody(req)); }
     catch { return json(res, 400, { error: 'invalid json' }); }
     if (typeof body.value !== 'string' || !body.value) {
-      return json(res, 400, { error: 'name and value required' });
+      return json(res, 400, { error: 'value required' });
+    }
+
+    const isCustom = typeof body.label === 'string' || typeof body.verifyUrl === 'string' || typeof body.authScheme === 'string';
+    if (!isCustom && (typeof body.name !== 'string' || !body.name)) {
+      return json(res, 400, { error: 'name required for non-custom key' });
     }
 
     let name = typeof body.name === 'string' ? body.name : '';
-    const isCustom = typeof body.label === 'string' || typeof body.verifyUrl === 'string' || typeof body.authScheme === 'string';
     if (isCustom) {
       try {
         const service = saveCustomService({
