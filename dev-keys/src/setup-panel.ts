@@ -1,18 +1,14 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
 import { createKeyStore } from './keystore.js';
+import {
+  listCustomServices,
+  removeCustomService,
+  saveCustomService,
+} from './service-metadata.js';
+import { KNOWN_SERVICES, validateKey, validateStoredKey } from './validation.js';
 
 const keyStore = createKeyStore();
-
-/** Well-known services with metadata for the setup UI */
-const KNOWN_SERVICES = [
-  { name: 'openrouter', label: 'OpenRouter', url: 'https://openrouter.ai/settings/keys', prefix: 'sk-or-', icon: '🌐' },
-  { name: 'openai', label: 'OpenAI', url: 'https://platform.openai.com/api-keys', prefix: 'sk-', icon: '🤖' },
-  { name: 'anthropic', label: 'Anthropic', url: 'https://console.anthropic.com/settings/keys', prefix: 'sk-ant-', icon: '🧠' },
-  { name: 'google', label: 'Google AI', url: 'https://aistudio.google.com/apikey', prefix: 'AI', icon: '🔍' },
-  { name: 'github', label: 'GitHub', url: 'https://github.com/settings/tokens', prefix: 'ghp_', icon: '🐙' },
-  { name: 'huggingface', label: 'Hugging Face', url: 'https://huggingface.co/settings/tokens', prefix: 'hf_', icon: '🤗' },
-];
 
 let currentPanel: vscode.WebviewPanel | undefined;
 
@@ -38,21 +34,48 @@ export function showSetupPanel(context: vscode.ExtensionContext, onKeysChanged: 
   panel.onDidDispose(() => { currentPanel = undefined; }, null, context.subscriptions);
 
   panel.webview.onDidReceiveMessage(
-    async (msg: { type: string; name?: string; value?: string }) => {
+    async (msg: { type: string; name?: string; label?: string; value?: string; verifyUrl?: string; authScheme?: string }) => {
       switch (msg.type) {
         case 'ready':
         case 'refresh':
           await pushState();
           break;
 
-        case 'save':
-        case 'saveCustom': {
+        case 'save': {
           if (!msg.name || !msg.value) { break; }
           if (!/^[a-z0-9_-]{1,64}$/i.test(msg.name)) { break; }
           await keyStore.set(msg.name, msg.value);
           onKeysChanged();
           await pushState();
           panel.webview.postMessage({ type: 'saved', name: msg.name });
+          const result = await validateKey(msg.name, msg.value);
+          panel.webview.postMessage({ type: 'validated', name: msg.name, ok: result.ok, message: result.message });
+          break;
+        }
+
+        case 'saveCustom': {
+          if (!msg.value) { break; }
+          try {
+            const service = saveCustomService({
+              name: msg.name,
+              label: msg.label,
+              verifyUrl: msg.verifyUrl,
+              authScheme: msg.authScheme === 'x-api-key' || msg.authScheme === 'x-goog-api-key' ? msg.authScheme : 'bearer',
+            });
+            await keyStore.set(service.name, msg.value);
+            onKeysChanged();
+            await pushState();
+            panel.webview.postMessage({ type: 'saved', name: service.name });
+            const result = await validateKey(service.name, msg.value);
+            panel.webview.postMessage({ type: 'validated', name: service.name, ok: result.ok, message: result.message });
+          } catch (error) {
+            panel.webview.postMessage({
+              type: 'validated',
+              name: msg.name ?? 'custom',
+              ok: false,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
           break;
         }
 
@@ -60,9 +83,18 @@ export function showSetupPanel(context: vscode.ExtensionContext, onKeysChanged: 
           if (!msg.name) { break; }
           if (!/^[a-z0-9_-]{1,64}$/i.test(msg.name)) { break; }
           await keyStore.delete(msg.name);
+          removeCustomService(msg.name);
           onKeysChanged();
           await pushState();
           panel.webview.postMessage({ type: 'deleted', name: msg.name });
+          break;
+        }
+
+        case 'validate': {
+          if (!msg.name) { break; }
+          if (!/^[a-z0-9_-]{1,64}$/i.test(msg.name)) { break; }
+          const result = await validateStoredKey(msg.name, keyStore);
+          panel.webview.postMessage({ type: 'validated', name: msg.name, ok: result.ok, message: result.message });
           break;
         }
 
@@ -89,14 +121,19 @@ export function showSetupPanel(context: vscode.ExtensionContext, onKeysChanged: 
 async function pushState(): Promise<void> {
   if (!currentPanel) { return; }
 
+  const customServices = listCustomServices();
+  const services = [...KNOWN_SERVICES, ...customServices];
+  const serviceMap = new Map(services.map((service) => [service.name, service]));
+
   const storedNames = await keyStore.list();
   const values = await Promise.all(storedNames.map(name => keyStore.get(name)));
   const keys = storedNames.map((name, i) => ({
     name,
+    label: serviceMap.get(name)?.label ?? name,
     masked: maskValue(values[i] ?? ''),
   }));
 
-  currentPanel.webview.postMessage({ type: 'state', keys, services: KNOWN_SERVICES });
+  currentPanel.webview.postMessage({ type: 'state', keys, services });
 }
 
 function maskValue(value: string): string {
@@ -183,7 +220,7 @@ function getHtml(webview: vscode.Webview): string {
   .add-custom { margin-top: 12px; padding: 14px 16px; background: var(--card-bg);
                 border: 1px dashed var(--border); border-radius: var(--radius); }
   .add-custom-row { display: flex; gap: 6px; align-items: center; }
-  .add-custom-row input { padding: 6px 10px; font-size: 12px; background: var(--input-bg);
+  .add-custom-row input, .add-custom-row select { padding: 6px 10px; font-size: 12px; background: var(--input-bg);
                           color: var(--input-fg); border: 1px solid var(--input-border);
                           border-radius: 4px; outline: none; font-family: inherit; }
   .name-input { width: 140px; }
@@ -193,6 +230,7 @@ function getHtml(webview: vscode.Webview): string {
            font-size: 12px; font-weight: 600; opacity: 0; transition: all 0.3s ease;
            pointer-events: none; z-index: 1000; }
   .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+  .toast.toast-error { background: var(--danger); color: #fff; }
   .footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border);
             display: flex; justify-content: space-between; align-items: center; }
   .footer-hint { font-size: 11px; color: var(--muted); }
@@ -212,7 +250,18 @@ function getHtml(webview: vscode.Webview): string {
   <div class="section-label">Add Custom Key</div>
   <div class="add-custom">
     <div class="add-custom-row">
+      <input type="text" id="custom-label" class="name-input" placeholder="display name" spellcheck="false" />
       <input type="text" id="custom-name" class="name-input" placeholder="key name" spellcheck="false" />
+    </div>
+    <div class="add-custom-row" style="margin-top:6px;">
+      <input type="text" id="custom-verify" class="value-input" placeholder="https://api.example.com/verify" spellcheck="false" />
+      <select id="custom-auth" class="name-input">
+        <option value="bearer">Bearer</option>
+        <option value="x-api-key">X-API-Key</option>
+        <option value="x-goog-api-key">X-Goog-Api-Key</option>
+      </select>
+    </div>
+    <div class="add-custom-row" style="margin-top:6px;">
       <input type="password" id="custom-value" class="value-input" placeholder="value" spellcheck="false" autocomplete="off" />
       <button class="btn btn-sm btn-toggle" id="toggle-custom">👁</button>
       <button class="btn btn-primary btn-sm" id="save-custom">Add</button>
@@ -259,13 +308,15 @@ function getHtml(webview: vscode.Webview): string {
     let body;
     if (stored) {
       const maskedEl = el('code', { class: 'masked-value', text: (key && key.masked) || '' });
+      const validateBtn = el('button', { class: 'btn btn-sm btn-ghost', text: 'Validate' });
+      validateBtn.addEventListener('click', function(){ send({ type: 'validate', name: svc.name }); });
       const updateBtn = el('button', { class: 'btn btn-sm btn-ghost', text: 'Update' });
       updateBtn.addEventListener('click', function(){ beginEdit(svc.name, svc.prefix); });
       const removeBtn = el('button', { class: 'btn btn-sm btn-danger', text: 'Remove' });
       removeBtn.addEventListener('click', function(){ send({ type: 'delete', name: svc.name }); });
       body = el('div', { class: 'card-body' }, [
         maskedEl,
-        el('div', { class: 'card-actions' }, [updateBtn, removeBtn])
+        el('div', { class: 'card-actions' }, [validateBtn, updateBtn, removeBtn])
       ]);
     } else {
       const input = el('input', { class: 'key-input', attrs: { type: 'password', placeholder: svc.prefix + '…', spellcheck: 'false', autocomplete: 'off' } });
@@ -288,18 +339,20 @@ function getHtml(webview: vscode.Webview): string {
     const header = el('div', { class: 'card-header' }, [
       el('span', { class: 'card-icon', text: '🔑' }),
       el('div', { class: 'card-title' }, [
-        el('span', { class: 'card-label', text: k.name }),
+        el('span', { class: 'card-label', text: k.label || k.name }),
         el('span', { class: 'card-name', text: 'custom' })
       ]),
       el('span', { class: 'card-status status-ok', text: '✓ Stored' })
     ]);
+    const validateBtn = el('button', { class: 'btn btn-sm btn-ghost', text: 'Validate' });
+    validateBtn.addEventListener('click', function(){ send({ type: 'validate', name: k.name }); });
     const updateBtn = el('button', { class: 'btn btn-sm btn-ghost', text: 'Update' });
     updateBtn.addEventListener('click', function(){ beginEdit(k.name, ''); });
     const removeBtn = el('button', { class: 'btn btn-sm btn-danger', text: 'Remove' });
     removeBtn.addEventListener('click', function(){ send({ type: 'delete', name: k.name }); });
     const body = el('div', { class: 'card-body' }, [
       el('code', { class: 'masked-value', text: k.masked }),
-      el('div', { class: 'card-actions' }, [updateBtn, removeBtn])
+      el('div', { class: 'card-actions' }, [validateBtn, updateBtn, removeBtn])
     ]);
     return el('div', { class: 'card card-stored', dataset: { name: k.name } }, [header, body]);
   }
@@ -317,7 +370,7 @@ function getHtml(webview: vscode.Webview): string {
 
     const content = document.getElementById('content');
     content.textContent = '';
-    content.appendChild(el('div', { class: 'section-label', text: 'AI Services' }));
+    content.appendChild(el('div', { class: 'section-label', text: 'Services' }));
     state.services.forEach(function(svc){
       content.appendChild(buildKnownCard(svc, !!storedSet[svc.name], storedSet[svc.name]));
     });
@@ -356,16 +409,36 @@ function getHtml(webview: vscode.Webview): string {
     send({ type: 'save', name: name, value: v });
   }
 
+  function normalizeName(value) {
+    return String(value || '')
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '')
+      .slice(0, 64);
+  }
+
   function saveCustom() {
+    const labelEl = document.getElementById('custom-label');
     const nameEl = document.getElementById('custom-name');
+    const verifyEl = document.getElementById('custom-verify');
+    const authEl = document.getElementById('custom-auth');
     const valueEl = document.getElementById('custom-value');
-    const name = (nameEl.value || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    const label = (labelEl.value || '').trim();
+    const name = ((nameEl.value || '').trim() || normalizeName(label)).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    const verifyUrl = (verifyEl.value || '').trim();
+    const authScheme = (authEl.value || 'bearer').trim();
     const value = (valueEl.value || '').trim();
+    if (!label) { labelEl.focus(); return; }
     if (!name) { nameEl.focus(); return; }
     if (!value) { valueEl.focus(); return; }
-    send({ type: 'saveCustom', name: name, value: value });
+    send({ type: 'saveCustom', name: name, label: label, verifyUrl: verifyUrl, authScheme: authScheme, value: value });
+    labelEl.value = '';
     nameEl.value = '';
+    verifyEl.value = '';
+    authEl.value = 'bearer';
     valueEl.value = '';
+    delete nameEl.dataset.manual;
   }
 
   function toggleVis(input, btn) {
@@ -373,14 +446,24 @@ function getHtml(webview: vscode.Webview): string {
     btn.textContent = input.type === 'password' ? '👁' : '🙈';
   }
 
-  function showToast(msg) {
+  function showToast(msg, isOk) {
     const t = document.getElementById('toast');
     t.textContent = msg;
+    t.classList.toggle('toast-error', isOk === false);
     t.classList.add('show');
-    setTimeout(function(){ t.classList.remove('show'); }, 2000);
+    setTimeout(function(){ t.classList.remove('show'); }, 2200);
   }
 
   document.getElementById('save-custom').addEventListener('click', saveCustom);
+  document.getElementById('custom-label').addEventListener('input', function(){
+    const nameEl = document.getElementById('custom-name');
+    if (!nameEl.dataset.manual) {
+      nameEl.value = normalizeName(this.value);
+    }
+  });
+  document.getElementById('custom-name').addEventListener('input', function(){
+    this.dataset.manual = this.value ? 'true' : '';
+  });
   document.getElementById('toggle-custom').addEventListener('click', function(){
     toggleVis(document.getElementById('custom-value'), this);
   });
@@ -398,7 +481,9 @@ function getHtml(webview: vscode.Webview): string {
     } else if (msg.type === 'saved') {
       showToast('✓ Saved ' + msg.name);
     } else if (msg.type === 'deleted') {
-      showToast('✓ Removed ' + msg.name);
+      showToast('✓ Removed ' + msg.name, true);
+    } else if (msg.type === 'validated') {
+      showToast((msg.ok ? '✓ ' : '⚠ ') + msg.message, !!msg.ok);
     }
   });
 

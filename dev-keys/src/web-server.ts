@@ -14,6 +14,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { execFileSync } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createKeyStore } from './keystore.js';
+import { listCustomServices, removeCustomService, saveCustomService } from './service-metadata.js';
+import { KNOWN_SERVICES, validateKey, validateStoredKey } from './validation.js';
 
 const PORT = parseInt(process.env.DEV_KEYS_PORT ?? '9876', 10);
 const TOKEN = randomBytes(32).toString('hex');
@@ -26,11 +28,13 @@ function mask(value: string): string {
   return value.slice(0, show) + '•'.repeat(Math.min(len - show, 24));
 }
 
-async function getKeysPayload(): Promise<Array<{ name: string; masked: string }>> {
+async function getKeysPayload(): Promise<Array<{ name: string; label: string; masked: string }>> {
   const names = await keyStore.list();
   const values = await Promise.all(names.map((n) => keyStore.get(n)));
+  const customLabelMap = new Map(listCustomServices().map((service) => [service.name, service.label]));
   return names.map((name, i) => ({
     name,
+    label: customLabelMap.get(name) ?? name,
     masked: values[i] ? mask(values[i] as string) : '',
   }));
 }
@@ -137,18 +141,55 @@ const server = createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/keys' && req.method === 'POST') {
-    let body: { name?: unknown; value?: unknown };
+    let body: { name?: unknown; label?: unknown; value?: unknown; verifyUrl?: unknown; authScheme?: unknown };
     try { body = JSON.parse(await readBody(req)); }
     catch { return json(res, 400, { error: 'invalid json' }); }
-    if (typeof body.name !== 'string' || typeof body.value !== 'string' || !body.name || !body.value) {
-      return json(res, 400, { error: 'name and value required' });
+    if (typeof body.value !== 'string' || !body.value) {
+      return json(res, 400, { error: 'value required' });
     }
-    if (!/^[a-z0-9_-]{1,64}$/i.test(body.name)) {
+
+    const isCustom = typeof body.label === 'string' || typeof body.verifyUrl === 'string' || typeof body.authScheme === 'string';
+    if (!isCustom && (typeof body.name !== 'string' || !body.name)) {
+      return json(res, 400, { error: 'name required for non-custom key' });
+    }
+
+    let name = typeof body.name === 'string' ? body.name : '';
+    if (isCustom) {
+      try {
+        const service = saveCustomService({
+          name,
+          label: typeof body.label === 'string' ? body.label : name,
+          verifyUrl: typeof body.verifyUrl === 'string' ? body.verifyUrl : undefined,
+          authScheme: body.authScheme === 'x-api-key' || body.authScheme === 'x-goog-api-key' ? body.authScheme : 'bearer',
+        });
+        name = service.name;
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    if (!/^[a-z0-9_-]{1,64}$/i.test(name)) {
       return json(res, 400, { error: 'invalid name (use [a-z0-9_-], 1-64 chars)' });
     }
-    await keyStore.set(body.name, body.value);
+
+    await keyStore.set(name, body.value);
+    const validation = await validateKey(name, body.value);
     broadcast('refresh', {});
-    return json(res, 200, { ok: true, name: body.name });
+    return json(res, 200, { ok: true, name, validation });
+  }
+
+  if (url.pathname === '/api/validate' && req.method === 'POST') {
+    let body: { name?: unknown };
+    try { body = JSON.parse(await readBody(req)); }
+    catch { return json(res, 400, { error: 'invalid json' }); }
+    if (typeof body.name !== 'string' || !body.name) {
+      return json(res, 400, { error: 'name required' });
+    }
+    if (!/^[a-z0-9_-]{1,64}$/i.test(body.name)) {
+      return json(res, 400, { error: 'invalid name' });
+    }
+    const validation = await validateStoredKey(body.name, keyStore);
+    return json(res, 200, { ok: validation.ok, validation });
   }
 
   if (url.pathname.startsWith('/api/keys/') && req.method === 'DELETE') {
@@ -158,6 +199,7 @@ const server = createServer(async (req, res) => {
     }
     try { await keyStore.delete(name); }
     catch { return json(res, 404, { error: 'not found' }); }
+    removeCustomService(name);
     broadcast('refresh', {});
     return json(res, 200, { ok: true, name });
   }
@@ -275,7 +317,7 @@ function getAppHtml(): string {
   .add-custom { margin-top: 12px; padding: 14px 16px; background: var(--card-bg);
                 border: 1px dashed var(--border); border-radius: var(--radius); }
   .add-custom-row { display: flex; gap: 6px; align-items: center; }
-  .add-custom-row input { padding: 7px 10px; font-size: 13px; background: var(--input-bg);
+  .add-custom-row input, .add-custom-row select { padding: 7px 10px; font-size: 13px; background: var(--input-bg);
                            color: var(--input-fg); border: 1px solid var(--input-border);
                            border-radius: 6px; outline: none; font-family: inherit; }
   .name-input { width: 150px; }
@@ -285,6 +327,7 @@ function getAppHtml(): string {
            font-size: 13px; font-weight: 700; opacity: 0; transition: all 0.3s ease;
            pointer-events: none; z-index: 1000; }
   .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+  .toast.toast-error { background: var(--danger); color: #fff; }
   .footer { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border);
             display: flex; justify-content: space-between; align-items: center; }
   .footer-hint { font-size: 11px; color: var(--muted); }
@@ -306,7 +349,18 @@ function getAppHtml(): string {
   <div class="section-label">Add Custom Key</div>
   <div class="add-custom">
     <div class="add-custom-row">
+      <input type="text" id="custom-label" class="name-input" placeholder="display name" spellcheck="false" />
       <input type="text" id="custom-name" class="name-input" placeholder="key name" spellcheck="false" />
+    </div>
+    <div class="add-custom-row" style="margin-top:6px;">
+      <input type="text" id="custom-verify" class="value-input" placeholder="https://api.example.com/verify" spellcheck="false" />
+      <select id="custom-auth" class="name-input">
+        <option value="bearer">Bearer</option>
+        <option value="x-api-key">X-API-Key</option>
+        <option value="x-goog-api-key">X-Goog-Api-Key</option>
+      </select>
+    </div>
+    <div class="add-custom-row" style="margin-top:6px;">
       <input type="password" id="custom-value" class="value-input" placeholder="value" spellcheck="false" autocomplete="off" />
       <button class="btn btn-sm btn-toggle" id="toggle-custom">👁</button>
       <button class="btn btn-primary btn-sm" id="save-custom">Add</button>
@@ -325,14 +379,7 @@ function getAppHtml(): string {
   var TOKEN = sessionStorage.getItem('dk_token');
   if (!TOKEN) { window.location.replace('/'); return; }
 
-  var SERVICES = [
-    { name: 'openrouter', label: 'OpenRouter', url: 'https://openrouter.ai/settings/keys', prefix: 'sk-or-', icon: '🌐' },
-    { name: 'openai', label: 'OpenAI', url: 'https://platform.openai.com/api-keys', prefix: 'sk-', icon: '🤖' },
-    { name: 'anthropic', label: 'Anthropic', url: 'https://console.anthropic.com/settings/keys', prefix: 'sk-ant-', icon: '🧠' },
-    { name: 'google', label: 'Google AI', url: 'https://aistudio.google.com/apikey', prefix: 'AI', icon: '🔍' },
-    { name: 'github', label: 'GitHub', url: 'https://github.com/settings/tokens', prefix: 'ghp_', icon: '🐙' },
-    { name: 'huggingface', label: 'Hugging Face', url: 'https://huggingface.co/settings/tokens', prefix: 'hf_', icon: '🤗' }
-  ];
+  var SERVICES = ${JSON.stringify(KNOWN_SERVICES)};
   var currentKeys = [];
 
   function api(method, path, body) {
@@ -340,7 +387,12 @@ function getAppHtml(): string {
     if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
     return fetch(path, opts).then(function(r){
       if (r.status === 401) { sessionStorage.removeItem('dk_token'); window.location.replace('/'); throw new Error('unauthorized'); }
-      return r.json();
+      return r.json().then(function(data){
+        if (!r.ok) {
+          throw new Error((data && data.error) || ('request failed with ' + r.status));
+        }
+        return data;
+      });
     });
   }
 
@@ -376,13 +428,15 @@ function getAppHtml(): string {
     var body;
     if (stored) {
       var maskedEl = el('code', { class: 'masked-value', text: (key && key.masked) || '' });
+      var validateBtn = el('button', { class: 'btn btn-sm btn-ghost', text: 'Validate' });
+      validateBtn.addEventListener('click', function(){ runValidation(svc.name); });
       var updateBtn = el('button', { class: 'btn btn-sm btn-ghost', text: 'Update' });
       updateBtn.addEventListener('click', function(){ beginEdit(svc.name, svc.prefix); });
       var removeBtn = el('button', { class: 'btn btn-sm btn-danger', text: 'Remove' });
       removeBtn.addEventListener('click', function(){ deleteKey(svc.name); });
       body = el('div', { class: 'card-body' }, [
         maskedEl,
-        el('div', { class: 'card-actions' }, [updateBtn, removeBtn])
+        el('div', { class: 'card-actions' }, [validateBtn, updateBtn, removeBtn])
       ]);
     } else {
       var input = el('input', { class: 'key-input', attrs: { type: 'password', placeholder: svc.prefix + '…', spellcheck: 'false', autocomplete: 'off' } });
@@ -405,18 +459,20 @@ function getAppHtml(): string {
     var header = el('div', { class: 'card-header' }, [
       el('span', { class: 'card-icon', text: '🔑' }),
       el('div', { class: 'card-title' }, [
-        el('span', { class: 'card-label', text: k.name }),
+        el('span', { class: 'card-label', text: k.label || k.name }),
         el('span', { class: 'card-name', text: 'custom' })
       ]),
       el('span', { class: 'card-status status-ok', text: '✓ Stored' })
     ]);
+    var validateBtn = el('button', { class: 'btn btn-sm btn-ghost', text: 'Validate' });
+    validateBtn.addEventListener('click', function(){ runValidation(k.name); });
     var updateBtn = el('button', { class: 'btn btn-sm btn-ghost', text: 'Update' });
     updateBtn.addEventListener('click', function(){ beginEdit(k.name, ''); });
     var removeBtn = el('button', { class: 'btn btn-sm btn-danger', text: 'Remove' });
     removeBtn.addEventListener('click', function(){ deleteKey(k.name); });
     var body = el('div', { class: 'card-body' }, [
       el('code', { class: 'masked-value', text: k.masked }),
-      el('div', { class: 'card-actions' }, [updateBtn, removeBtn])
+      el('div', { class: 'card-actions' }, [validateBtn, updateBtn, removeBtn])
     ]);
     return el('div', { class: 'card card-stored', dataset: { name: k.name } }, [header, body]);
   }
@@ -434,7 +490,7 @@ function getAppHtml(): string {
 
     var content = document.getElementById('content');
     content.textContent = '';
-    content.appendChild(el('div', { class: 'section-label', text: 'AI Services' }));
+    content.appendChild(el('div', { class: 'section-label', text: 'Services' }));
     SERVICES.forEach(function(svc){
       content.appendChild(buildKnownCard(svc, !!storedSet[svc.name], storedSet[svc.name]));
     });
@@ -470,9 +526,12 @@ function getAppHtml(): string {
   function saveValue(name, input) {
     var v = input && input.value ? input.value.trim() : '';
     if (!v) { if (input) input.focus(); return; }
-    api('POST', '/api/keys', { name: name, value: v }).then(function(){
-      showToast('✓ Saved ' + name);
+    api('POST', '/api/keys', { name: name, value: v }).then(function(data){
+      showToast('✓ Saved ' + name, true);
+      if (data && data.validation) showToast((data.validation.ok ? '✓ ' : '⚠ ') + data.validation.message, !!data.validation.ok);
       loadKeys();
+    }).catch(function(error){
+      showToast('⚠ ' + error.message, false);
     });
   }
 
@@ -484,17 +543,45 @@ function getAppHtml(): string {
     });
   }
 
+  function normalizeName(value) {
+    return String(value || '')
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '')
+      .slice(0, 64);
+  }
+
   function saveCustom() {
+    var labelEl = document.getElementById('custom-label');
     var nameEl = document.getElementById('custom-name');
+    var verifyEl = document.getElementById('custom-verify');
+    var authEl = document.getElementById('custom-auth');
     var valueEl = document.getElementById('custom-value');
-    var name = (nameEl && nameEl.value || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    var label = (labelEl && labelEl.value || '').trim();
+    var name = ((nameEl && nameEl.value || '').trim() || normalizeName(label)).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    var verifyUrl = (verifyEl && verifyEl.value || '').trim();
+    var authScheme = (authEl && authEl.value || 'bearer').trim();
     var value = (valueEl && valueEl.value || '').trim();
+    if (!label) { if (labelEl) labelEl.focus(); return; }
     if (!name) { if (nameEl) nameEl.focus(); return; }
     if (!value) { if (valueEl) valueEl.focus(); return; }
-    api('POST', '/api/keys', { name: name, value: value }).then(function(){
-      nameEl.value = ''; valueEl.value = '';
-      showToast('✓ Saved ' + name);
+    api('POST', '/api/keys', { name: name, label: label, verifyUrl: verifyUrl, authScheme: authScheme, value: value }).then(function(data){
+      labelEl.value = ''; nameEl.value = ''; verifyEl.value = ''; authEl.value = 'bearer'; valueEl.value = '';
+      delete nameEl.dataset.manual;
+      showToast('✓ Saved ' + name, true);
+      if (data && data.validation) showToast((data.validation.ok ? '✓ ' : '⚠ ') + data.validation.message, !!data.validation.ok);
       loadKeys();
+    }).catch(function(error){
+      showToast('⚠ ' + error.message, false);
+    });
+  }
+
+  function runValidation(name) {
+    api('POST', '/api/validate', { name: name }).then(function(data){
+      if (data && data.validation) showToast((data.validation.ok ? '✓ ' : '⚠ ') + data.validation.message, !!data.validation.ok);
+    }).catch(function(error){
+      showToast('⚠ ' + error.message, false);
     });
   }
 
@@ -503,14 +590,24 @@ function getAppHtml(): string {
     btn.textContent = input.type === 'password' ? '👁' : '🙈';
   }
 
-  function showToast(msg) {
+  function showToast(msg, isOk) {
     var t = document.getElementById('toast');
     t.textContent = msg;
+    t.classList.toggle('toast-error', isOk === false);
     t.classList.add('show');
     setTimeout(function(){ t.classList.remove('show'); }, 2200);
   }
 
   document.getElementById('save-custom').addEventListener('click', saveCustom);
+  document.getElementById('custom-label').addEventListener('input', function(){
+    var nameEl = document.getElementById('custom-name');
+    if (!nameEl.dataset.manual) {
+      nameEl.value = normalizeName(this.value);
+    }
+  });
+  document.getElementById('custom-name').addEventListener('input', function(){
+    this.dataset.manual = this.value ? 'true' : '';
+  });
   document.getElementById('toggle-custom').addEventListener('click', function(){
     var v = document.getElementById('custom-value');
     toggleVis(v, this);

@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { createKeyStore } from './keystore.js';
+import { removeCustomService } from './service-metadata.js';
 import { showSetupPanel } from './setup-panel.js';
+import { validateKey, validateStoredKey } from './validation.js';
 
 const keyStore = createKeyStore();
 
@@ -80,6 +82,12 @@ class DevKeysAuthProvider implements vscode.AuthenticationProvider {
     if (!value) { throw new Error('API key value is required'); }
 
     await keyStore.set(name, value);
+    const validation = await validateKey(name, value);
+    if (validation.ok) {
+      void vscode.window.showInformationMessage(validation.message);
+    } else {
+      void vscode.window.showWarningMessage(validation.message);
+    }
     const session = keyToSession(name, value);
     this._onDidChangeSessions.fire({ added: [session], removed: undefined, changed: undefined });
     return session;
@@ -90,6 +98,7 @@ class DevKeysAuthProvider implements vscode.AuthenticationProvider {
     const value = await keyStore.get(sessionId);
     if (value) {
       await keyStore.delete(sessionId);
+      removeCustomService(sessionId);
       const session = keyToSession(sessionId, value);
       this._onDidChangeSessions.fire({ added: undefined, removed: [session], changed: undefined });
     }
@@ -137,7 +146,13 @@ export function activate(context: vscode.ExtensionContext) {
       if (!value) { return; }
       await keyStore.set(name, value);
       onKeysChanged();
-      vscode.window.showInformationMessage(`Stored key: ${name}`);
+      const validation = await validateKey(name, value);
+      const message = `Stored key: ${name}. ${validation.message}`;
+      if (validation.ok) {
+        vscode.window.showInformationMessage(message);
+      } else {
+        vscode.window.showWarningMessage(message);
+      }
     }),
   );
 
@@ -162,8 +177,15 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('No keys stored.');
         return;
       }
-      const items = names.map(n => ({ label: n, description: 'macOS Keychain' }));
-      vscode.window.showQuickPick(items, { placeHolder: 'Stored API keys' });
+      const items = names.map(n => ({ label: n, description: 'Secure keystore · select to validate' }));
+      const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Stored API keys' });
+      if (!picked) { return; }
+      const result = await validateStoredKey(picked.label, keyStore);
+      if (result.ok) {
+        vscode.window.showInformationMessage(result.message);
+      } else {
+        vscode.window.showWarningMessage(result.message);
+      }
     }),
   );
 }

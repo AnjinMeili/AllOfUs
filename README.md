@@ -47,6 +47,7 @@ COMMANDS
   set <name> [value]     Store a key (prompts securely if value omitted)
   get <name>             Print a key to stdout
   show <name>            Print key name + masked value
+  test <name>            Validate a stored key with a sanity check
   delete <name>          Remove a key (with confirmation)
   list                   List all stored key names
   env [names...]         Print export statements for shell eval
@@ -74,12 +75,14 @@ dev-keys ui
 
 Features:
 - Cards for 6 known AI services (OpenRouter, OpenAI, Anthropic, Google AI, GitHub, Hugging Face) with direct "Get key" links
+- Instant format and network validation after storing a key
+- Inline validation for already stored keys
 - Progress bar showing configuration status
 - Inline password inputs with show/hide toggle
 - Add/update/remove keys with toast notifications
 - Dark and light mode via `prefers-color-scheme`
 - SSE-powered live sync across browser tabs
-- Custom key support
+- Custom key support with optional verify endpoints
 
 ### VS Code Extension
 

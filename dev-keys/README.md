@@ -1,6 +1,6 @@
 # dev-keys
 
-Store API keys in macOS Keychain. Access them from any terminal, script, Node.js app, or VS Code extension.
+Store API keys in your OS credential store. Access them from any terminal, script, Node.js app, web UI, or VS Code extension.
 
 ```bash
 npm install -g @allofus/dev-keys
@@ -8,15 +8,16 @@ npm install -g @allofus/dev-keys
 
 ## Why
 
-- **One place** — keys live in macOS Keychain, encrypted at rest by the OS
-- **Every consumer** — CLI, env vars, Node.js, VS Code extensions, raw `security` command
+- **One place** — keys live in Keychain / Secret Service / Credential Manager, encrypted at rest by the OS
+- **Every consumer** — CLI, env vars, Node.js, VS Code extensions, and the browser UI
 - **No dotfiles** — no `.env` files to leak, rotate, or `.gitignore`
 
 ## CLI
 
 ```bash
-dev-keys set openrouter sk-or-abc123    # store
+dev-keys set openrouter sk-or-abc123    # store and sanity-check
 dev-keys set anthropic                  # prompts securely
+dev-keys test openrouter                # validate a stored key
 dev-keys get openrouter                 # print to stdout
 dev-keys show openrouter                # print masked (openrout****************)
 dev-keys list                           # list all key names
@@ -41,7 +42,7 @@ with-key openrouter npm start
 
 ## Use Without Installing
 
-Every command is a thin wrapper around macOS `security`:
+On macOS, every command is a thin wrapper around the built-in `security` tool:
 
 ```bash
 # Store
@@ -83,10 +84,16 @@ const session = await vscode.authentication.getSession(
 const apiKey = session.accessToken;
 ```
 
+## Features
+
+- Built-in validation for well-known services such as OpenRouter, OpenAI, Anthropic, Google AI, GitHub, and Hugging Face
+- Custom service support with optional verify endpoints
+- Shared storage across the CLI, web UI, and VS Code extension
+
 ## Requirements
 
-- **macOS** (uses Keychain via `security` CLI)
 - **Node.js** >= 18 (for npm install)
+- **macOS, Linux, or Windows**
 
 ## License
 

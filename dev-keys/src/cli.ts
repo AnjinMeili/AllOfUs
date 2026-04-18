@@ -17,6 +17,8 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { resolve } from 'node:path';
 import { createKeyStore, type KeyStore } from './keystore.js';
+import { removeCustomService } from './service-metadata.js';
+import { validateKey, validateStoredKey } from './validation.js';
 
 const VERSION = '0.1.0';
 
@@ -172,6 +174,16 @@ async function cmdSet(store: KeyStore, args: string[]): Promise<void> {
   }
   await store.set(name, value);
   ok(`Stored ${seq.bold}${name}${seq.reset}`);
+
+  const validation = await validateKey(name, value);
+  if (validation.kind === 'network' && validation.ok) {
+    ok(validation.message);
+  } else if (!validation.ok) {
+    err(`Sanity check failed: ${validation.message}`);
+    process.exitCode = 2;
+  } else {
+    info(validation.message);
+  }
 }
 
 async function cmdGet(store: KeyStore, args: string[]): Promise<void> {
@@ -223,6 +235,7 @@ async function cmdDelete(store: KeyStore, args: string[]): Promise<void> {
     process.exit(1);
   }
   await store.delete(name);
+  removeCustomService(name);
   ok(`Deleted ${seq.bold}${name}${seq.reset}`);
 }
 
@@ -248,6 +261,17 @@ async function cmdEnv(store: KeyStore, args: string[]): Promise<void> {
     const escaped = value.replace(/'/g, `'\\''`);
     process.stdout.write(`export ${envNameFor(name)}='${escaped}'\n`);
   }
+}
+
+async function cmdTest(store: KeyStore, args: string[]): Promise<void> {
+  const name = requireValidName(args[0]);
+  const result = await validateStoredKey(name, store);
+  if (result.ok) {
+    ok(result.message);
+    return;
+  }
+  err(result.message);
+  process.exit(1);
 }
 
 function cmdInit(): void {
@@ -295,6 +319,7 @@ ${s.bold}COMMANDS${s.reset}
   ${s.cyan}env${s.reset} [names...]         Print export statements for shell eval
   ${s.cyan}init${s.reset}                   Print shell startup script (for .zshrc/.bashrc)
   ${s.cyan}show${s.reset} <name>            Print key name + masked value
+  ${s.cyan}test${s.reset} <name>            Validate a stored key with a sanity check
   ${s.cyan}ui${s.reset}                     Open setup panel in your browser
 
 ${s.bold}OPTIONS${s.reset}
@@ -334,6 +359,7 @@ async function main(): Promise<void> {
     case 'set':                                  return cmdSet(store, rest);
     case 'get':                                  return cmdGet(store, rest);
     case 'show':                                 return cmdShow(store, rest);
+    case 'test': case 'validate':                return cmdTest(store, rest);
     case 'delete': case 'rm':                    return cmdDelete(store, rest);
     case 'list': case 'ls':                      return cmdList(store);
     case 'env':                                  return cmdEnv(store, rest);
