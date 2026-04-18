@@ -1,16 +1,16 @@
 # AllOfUs
 
-A modular AI agent framework with secure, cross-app API key management for macOS.
+A modular AI agent framework with secure, cross-app API key management across macOS, Linux, and Windows.
 
-> Store API keys once in macOS Keychain. Access them from any terminal, script, Node.js app, VS Code extension, or browser.
+> Store API keys once in your OS credential store. Access them from any terminal, script, Node.js app, VS Code extension, or browser.
 
 ## Overview
 
-AllOfUs has two components that share a single macOS Keychain backend:
+AllOfUs has two components that share a single secure credential-store backend:
 
 | Component | What it does |
-|---|---|
-| **dev-keys** | CLI + Web UI + VS Code extension for managing API keys in Keychain |
+| --- | --- |
+| **dev-keys** | CLI + Web UI + VS Code extension for managing API keys in the OS credential store |
 | **Agent** | Event-driven AI agent built on the [OpenRouter SDK](https://openrouter.ai/docs) |
 
 ---
@@ -19,29 +19,20 @@ AllOfUs has two components that share a single macOS Keychain backend:
 
 ### Choose Your Interface
 
-<table>
-<tr>
-<td width="33%" align="center"><strong>CLI</strong></td>
-<td width="33%" align="center"><strong>Web UI</strong></td>
-<td width="33%" align="center"><strong>VS Code</strong></td>
-</tr>
-<tr>
-<td><code>dev-keys set openrouter</code></td>
-<td><code>dev-keys ui</code></td>
-<td>Cmd+Shift+P &rarr; Dev Keys: Open Setup Panel</td>
-</tr>
-</table>
+| Interface | Example |
+| --- | --- |
+| **CLI** | dev-keys set openrouter |
+| **Web UI** | dev-keys ui |
+| **VS Code** | Cmd+Shift+P → Dev Keys: Open Setup Panel |
 
-All three read and write the same macOS Keychain entries. A key stored from the CLI is instantly available in VS Code and the web UI.
+All three read and write the same secure keystore entries. A key stored from the CLI is instantly available in VS Code and the web UI.
 
 ### CLI
 
-<p align="center">
-  <img src="docs/images/cli-demo.svg" alt="dev-keys CLI demo" width="620" />
-</p>
+![dev-keys CLI demo](docs/images/cli-demo.svg)
 
-```
-dev-keys v0.1.0 — API keys in macOS Keychain
+```text
+dev-keys v0.1.0 — API keys in your secure OS credential store
 
 COMMANDS
   set <name> [value]     Store a key (prompts securely if value omitted)
@@ -63,9 +54,7 @@ OPTIONS
 
 ### Web UI
 
-<p align="center">
-  <img src="docs/images/web-ui-preview.svg" alt="dev-keys web UI" width="620" />
-</p>
+![dev-keys web UI](docs/images/web-ui-preview.svg)
 
 ```bash
 dev-keys ui
@@ -74,6 +63,7 @@ dev-keys ui
 ```
 
 Features:
+
 - Cards for 6 known AI services (OpenRouter, OpenAI, Anthropic, Google AI, GitHub, Hugging Face) with direct "Get key" links
 - Instant format and network validation after storing a key
 - Inline validation for already stored keys
@@ -89,7 +79,7 @@ Features:
 Open the command palette (`Cmd+Shift+P`) and run:
 
 | Command | Description |
-|---|---|
+| --- | --- |
 | **Dev Keys: Open Setup Panel** | Full setup UI as a webview panel |
 | **Dev Keys: Add API Key** | Quick add via input box |
 | **Dev Keys: Remove API Key** | Quick remove via picker |
@@ -118,7 +108,7 @@ const apiKey = session.accessToken;
 Platform support (all three work on macOS, Linux, and Windows):
 
 | Component | Backend |
-|---|---|
+| --- | --- |
 | CLI (`dev-keys`) | Keychain / Secret Service / Credential Manager via [`@napi-rs/keyring`](https://github.com/Brooooooklyn/keyring-node) |
 | VS Code extension | same |
 | Web UI (`dev-keys ui`) | same |
@@ -211,6 +201,7 @@ eval "$(dev-keys init)"
 ```
 
 This does two things:
+
 1. Exports all stored keys as `<NAME>_API_KEY` environment variables
 2. Provides a `with-key` helper function
 
@@ -238,7 +229,7 @@ curl -H "Authorization: Bearer $(dev-keys get openrouter)" https://api.example.c
 
 ### Use Without dev-keys Installed
 
-Every command is a thin wrapper around macOS `security`. You can always access keys directly:
+On macOS, every command is a thin wrapper around the built-in `security` tool. You can always access keys directly:
 
 ```bash
 # Store
@@ -264,13 +255,13 @@ const apiKey = await getKey('openrouter');
 ### Access Patterns Summary
 
 | Consumer | Method |
-|---|---|
+| --- | --- |
 | **CLI / shell scripts** | `dev-keys get <name>` or `eval $(dev-keys env)` |
 | **Node.js** | `import { getKey } from './get-key.js'` |
 | **VS Code extensions** | `vscode.authentication.getSession('dev-api-keys', ['openrouter'])` |
-| **Web UI** | `dev-keys ui` (localhost:9876) |
+| **Web UI** | `dev-keys ui` on localhost |
 | **Any macOS app** | `security find-generic-password -s dev-api-keys -a <name> -w` |
-| **Python, Ruby, etc.** | Shell out to `security find-generic-password ...` |
+| **Python, Ruby, etc.** | Shell out to `dev-keys get <name>` or the platform-native credential tool |
 
 ---
 
@@ -291,11 +282,11 @@ npm run start:headless
 npm start
 ```
 
-No environment variable needed -- the agent reads from Keychain automatically via `getKey('openrouter')`.
+No environment variable needed — the agent reads from the secure store automatically via `getKey('openrouter')`.
 
 ### Architecture
 
-```
+```text
 User Input --> Agent.send() --> OpenRouter SDK --> callModel()
                                                       |
                                                getItemsStream()
@@ -335,7 +326,7 @@ agent.on('error', (err) => { ... });
 ### Events
 
 | Event | Payload | Description |
-|---|---|---|
+| --- | --- | --- |
 | `message:user` | `Message` | User message added |
 | `message:assistant` | `Message` | Assistant response complete |
 | `item:update` | `StreamableOutputItem` | Streaming item (replace by ID) |
@@ -371,39 +362,40 @@ Exit codes: `0` clean, `1` warnings, `2` failures.
 
 ## Project Structure
 
-```
+```text
 AllOfUs/
 ├── src/
 │   ├── agent.ts           # Agent core (EventEmitter + OpenRouter SDK)
 │   ├── tools.ts           # Example tools (time, calculator)
-│   ├── get-key.ts         # Key resolver: env var --> Keychain fallback
+│   ├── get-key.ts         # Key resolver: env var --> secure store fallback
 │   ├── headless.ts        # Headless CLI entry point
 │   ├── cli.tsx            # Ink TUI entry point
 │   └── audit-permissions.ts
 ├── dev-keys/
-│   ├── bin/dev-keys       # CLI (bash, POSIX-compatible)
+│   ├── bin/dev-keys       # CLI shim
 │   ├── src/
-│   │   ├── keychain.ts    # Async Keychain bindings
+│   │   ├── keystore.ts    # Cross-platform keystore backend
 │   │   ├── extension.ts   # VS Code AuthenticationProvider
 │   │   ├── setup-panel.ts # VS Code webview panel UI
+│   │   ├── validation.ts  # Key validation helpers
 │   │   └── web-server.ts  # Standalone HTTP server + browser UI
 │   ├── package.json       # npm + VS Code extension manifest
 │   └── dev-keys-*.vsix    # Packaged VS Code extension
 ├── docs/images/           # Documentation assets
 ├── CLAUDE.md              # Claude Code project instructions
-├── AGENTS.md              # OpenAI Codex project instructions
+├── AGENTS.md              # Workspace instructions
 ├── .github/
-│   └── copilot-instructions.md  # GitHub Copilot instructions
+│   └── copilot-instructions.md
 ├── CONTRIBUTING.md
 ├── SECURITY.md
-├── LICENSE                # MIT
+├── LICENSE
 └── package.json
 ```
 
 ## npm Scripts
 
 | Script | Description |
-|---|---|
+| --- | --- |
 | `npm start` | Run agent with Ink TUI |
 | `npm run start:headless` | Run agent with readline |
 | `npm run dev` | Run agent with file watching |
@@ -417,8 +409,8 @@ AllOfUs/
 
 ## Security
 
-- API keys are stored in macOS Keychain, encrypted at rest by the OS
-- The `security` CLI is used for all Keychain access — no native Node addons
+- API keys are stored in the OS credential store, encrypted at rest by the OS
+- On macOS, the native `security` CLI remains available for direct Keychain access
 - `.gitignore` excludes `.env` files
 - The `dev-keys ui` server binds to `127.0.0.1`, validates the `Host`
   header, and requires a per-launch session token on every request

@@ -14,6 +14,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { execFileSync } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createKeyStore } from './keystore.js';
+import { getBrowserOpenCommand, getSecureStoreLabel } from './platform.js';
 import { listCustomServices, removeCustomService, saveCustomService } from './service-metadata.js';
 import { KNOWN_SERVICES, validateKey, validateStoredKey } from './validation.js';
 
@@ -21,6 +22,7 @@ const PORT = parseInt(process.env.DEV_KEYS_PORT ?? '9876', 10);
 const TOKEN = randomBytes(32).toString('hex');
 const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
 const keyStore = createKeyStore();
+const STORE_LABEL = getSecureStoreLabel();
 
 function mask(value: string): string {
   const len = value.length;
@@ -339,13 +341,13 @@ function getAppHtml(): string {
 <div class="container">
   <div class="header">
     <h1>🔐 dev-keys</h1>
-    <p>API keys in macOS Keychain — encrypted, shared across all apps</p>
+    <p>API keys in ${STORE_LABEL} — encrypted at rest and shared across supported apps</p>
   </div>
   <div class="progress-bar">
     <div class="progress-track"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
     <span class="progress-label" id="progress-label">Loading…</span>
   </div>
-  <div id="content"><div class="empty-state"><p>Loading keys from Keychain…</p></div></div>
+  <div id="content"><div class="empty-state"><p>Loading keys from ${STORE_LABEL}…</p></div></div>
   <div class="section-label">Add Custom Key</div>
   <div class="add-custom">
     <div class="add-custom-row">
@@ -635,7 +637,18 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`  ${url}\n`);
 
   if (process.argv.includes('--no-open')) { return; }
-  try { execFileSync('open', [url]); } catch {}
+
+  const openCommand = getBrowserOpenCommand(url);
+  if (!openCommand) {
+    console.log('  Browser auto-open is not supported on this platform. Open the URL above manually.\n');
+    return;
+  }
+
+  try {
+    execFileSync(openCommand.command, openCommand.args, { stdio: 'ignore' });
+  } catch {
+    console.log('  Could not open your browser automatically. Open the URL above manually.\n');
+  }
 });
 
 process.on('SIGINT', () => { server.close(); process.exit(0); });

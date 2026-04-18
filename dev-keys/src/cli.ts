@@ -94,6 +94,7 @@ function readPasswordFromStdin(prompt: string): Promise<string> {
   return new Promise((resolveValue) => {
     // If stdin isn't a TTY, fall back to a regular read (no masking needed)
     if (!process.stdin.isTTY) {
+      info('Warning: secure input masking is unavailable in this environment; your input may be echoed.');
       return resolveValue(readLineFromStdin(prompt));
     }
     process.stderr.write(prompt);
@@ -101,7 +102,7 @@ function readPasswordFromStdin(prompt: string): Promise<string> {
     // readline's terminal mode still echoes — we temporarily disable echo
     const setRawMode = process.stdin.setRawMode?.bind(process.stdin);
     if (!setRawMode) {
-      // No raw mode available; fall back to echoing
+      info('Warning: terminal echo cannot be disabled here; your input may be visible.');
       rl.question('', (answer) => { rl.close(); resolveValue(answer); });
       return;
     }

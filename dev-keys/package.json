@@ -28,6 +28,7 @@
   },
   "files": [
     "dist/",
+    "node_modules/",
     "package.json",
     "README.md",
     "LICENSE"
@@ -40,7 +41,7 @@
     "authentication": [
       {
         "id": "dev-api-keys",
-        "label": "Dev API Keys (Keychain)"
+        "label": "Dev API Keys (Secure Store)"
       }
     ],
     "commands": [

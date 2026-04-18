@@ -6,6 +6,7 @@ import {
   removeCustomService,
   saveCustomService,
 } from './service-metadata.js';
+import { getSecureStoreLabel } from './platform.js';
 import { KNOWN_SERVICES, validateKey, validateStoredKey } from './validation.js';
 
 const keyStore = createKeyStore();
@@ -146,6 +147,7 @@ function maskValue(value: string): string {
 function getHtml(webview: vscode.Webview): string {
   const nonce = randomBytes(16).toString('base64');
   const cspSource = webview.cspSource;
+  const storeLabel = getSecureStoreLabel();
 
   return /*html*/ `<!DOCTYPE html>
 <html lang="en">
@@ -240,7 +242,7 @@ function getHtml(webview: vscode.Webview): string {
 <div class="container">
   <div class="header">
     <h1>🔐 API Keys Setup</h1>
-    <p>Keys are stored in macOS Keychain — encrypted at rest, shared across all apps</p>
+    <p>Keys are stored in ${storeLabel} — encrypted at rest and shared across supported apps</p>
   </div>
   <div class="progress-bar">
     <div class="progress-track"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>

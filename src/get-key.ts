@@ -19,12 +19,19 @@ export async function getKey(name: string): Promise<string> {
   const fromEnv = process.env[envName];
   if (fromEnv) return fromEnv;
 
+  let lookupError: string | undefined;
   try {
     const entry = new AsyncEntry(SERVICE, name);
     const value = await entry.getPassword();
     if (value) return value;
-  } catch {
-    /* fall through to the missing-key error */
+  } catch (error) {
+    lookupError = error instanceof Error ? error.message : String(error);
+  }
+
+  if (lookupError) {
+    throw new Error(
+      `API key "${name}" could not be read from the secure store (${lookupError}). Set ${envName} or run: dev-keys set ${name}`,
+    );
   }
 
   throw new Error(

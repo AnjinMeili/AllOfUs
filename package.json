@@ -1,7 +1,7 @@
 {
   "name": "@allofus/agent",
   "version": "0.1.0",
-  "description": "Modular AI agent framework with macOS Keychain-backed API key management",
+  "description": "Modular AI agent framework with secure OS credential-store-backed API key management",
   "main": "dist/agent.js",
   "scripts": {
     "start": "tsx src/cli.tsx",
