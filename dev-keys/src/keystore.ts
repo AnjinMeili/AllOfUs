@@ -2,7 +2,6 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
-import { AsyncEntry } from '@napi-rs/keyring';
 import { addName, parseIndex, removeName, serializeIndex, type NameIndex } from './keystore-names.js';
 
 const SERVICE = 'dev-api-keys';
@@ -103,6 +102,24 @@ function indexPath(): string {
   return join(configDir(), 'names.json');
 }
 
+type AsyncEntryLike = {
+  getPassword(): Promise<string | null | undefined>;
+  setPassword(value: string): Promise<void>;
+  deletePassword(): Promise<void>;
+};
+
+type AsyncEntryCtor = new (service: string, name: string) => AsyncEntryLike;
+
+let asyncEntryCtor: AsyncEntryCtor | undefined;
+
+async function getKeyringEntry(name: string): Promise<AsyncEntryLike> {
+  if (!asyncEntryCtor) {
+    const mod = await import('@napi-rs/keyring');
+    asyncEntryCtor = mod.AsyncEntry as AsyncEntryCtor;
+  }
+  return new asyncEntryCtor(SERVICE, name);
+}
+
 function readIndex(): NameIndex {
   const path = indexPath();
   if (!existsSync(path)) return { names: [] };
@@ -123,7 +140,7 @@ function writeIndex(index: NameIndex): void {
 const keyringKeyStore: KeyStore = {
   async get(name) {
     try {
-      const entry = new AsyncEntry(SERVICE, name);
+      const entry = await getKeyringEntry(name);
       const value = await entry.getPassword();
       return value ?? undefined;
     } catch {
@@ -132,13 +149,13 @@ const keyringKeyStore: KeyStore = {
   },
 
   async set(name, value) {
-    const entry = new AsyncEntry(SERVICE, name);
+    const entry = await getKeyringEntry(name);
     await entry.setPassword(value);
     writeIndex(addName(readIndex(), name));
   },
 
   async delete(name) {
-    const entry = new AsyncEntry(SERVICE, name);
+    const entry = await getKeyringEntry(name);
     try { await entry.deletePassword(); } catch { /* absent is fine */ }
     writeIndex(removeName(readIndex(), name));
   },
@@ -152,7 +169,7 @@ const keyringKeyStore: KeyStore = {
     const present: string[] = [];
     for (const name of index.names) {
       try {
-        const entry = new AsyncEntry(SERVICE, name);
+        const entry = await getKeyringEntry(name);
         const value = await entry.getPassword();
         if (value !== undefined && value !== null) present.push(name);
       } catch {
