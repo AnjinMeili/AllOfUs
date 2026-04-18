@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { resolve } from 'node:path';
 import { createKeyStore, type KeyStore } from './keystore.js';
+import { removeCustomService } from './service-metadata.js';
 import { validateKey, validateStoredKey } from './validation.js';
 
 const VERSION = '0.1.0';
@@ -179,6 +180,7 @@ async function cmdSet(store: KeyStore, args: string[]): Promise<void> {
     ok(validation.message);
   } else if (!validation.ok) {
     err(`Sanity check failed: ${validation.message}`);
+    process.exitCode = 2;
   } else {
     info(validation.message);
   }
@@ -233,6 +235,7 @@ async function cmdDelete(store: KeyStore, args: string[]): Promise<void> {
     process.exit(1);
   }
   await store.delete(name);
+  removeCustomService(name);
   ok(`Deleted ${seq.bold}${name}${seq.reset}`);
 }
 

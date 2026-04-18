@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { createKeyStore } from './keystore.js';
+import { removeCustomService } from './service-metadata.js';
 import { showSetupPanel } from './setup-panel.js';
 import { validateKey, validateStoredKey } from './validation.js';
 
@@ -97,6 +98,7 @@ class DevKeysAuthProvider implements vscode.AuthenticationProvider {
     const value = await keyStore.get(sessionId);
     if (value) {
       await keyStore.delete(sessionId);
+      removeCustomService(sessionId);
       const session = keyToSession(sessionId, value);
       this._onDidChangeSessions.fire({ added: undefined, removed: [session], changed: undefined });
     }

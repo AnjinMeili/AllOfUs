@@ -19,6 +19,15 @@ type ServiceIndex = {
   services: ServiceDefinition[];
 };
 
+const RESERVED_SERVICE_NAMES = new Set([
+  'openrouter',
+  'openai',
+  'anthropic',
+  'google',
+  'github',
+  'huggingface',
+]);
+
 function configDir(): string {
   if (platform() === 'win32') {
     const appData = process.env.APPDATA;
@@ -85,6 +94,10 @@ function sanitizeService(input: Partial<ServiceDefinition>): ServiceDefinition {
 
   if (!name) {
     throw new Error('A custom key name is required.');
+  }
+
+  if (RESERVED_SERVICE_NAMES.has(name)) {
+    throw new Error(`'${name}' is reserved for a built-in service.`);
   }
 
   const verifyUrl = (input.verifyUrl ?? '').trim();
